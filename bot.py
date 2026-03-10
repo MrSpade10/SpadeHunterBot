@@ -15,7 +15,6 @@ from flask import Flask, request, abort
 
 load_dotenv()
 TOKEN        = (os.getenv('TELEGRAM_TOKEN') or '').strip()
-TWELVE_KEY   = (os.getenv('TWELVE_DATA_KEY') or '').strip()
 RENDER_URL   = (os.getenv('RENDER_URL') or '').strip()
 DATABASE_URL = (os.getenv('DATABASE_URL') or '').strip()
 PORT         = int(os.getenv('PORT', 10000))
@@ -43,7 +42,7 @@ def reset_cancel_flag(chat_id, op):
 def is_cancelled(chat_id, op):
     return get_cancel_flag(chat_id, op).is_set()
 
-TD_DELAY = 8.5   # saniye – TwelveData free: 8 istek/dk
+TD_DELAY = 1.5   # saniye – Yahoo Finance için yeterli
 
 BIST_FALLBACK = [
     "THYAO","GARAN","ASELS","KCHOL","EREGL","AKBNK","YKBNK","SISE","TUPRS","SAHOL",
@@ -80,8 +79,6 @@ BIST_FALLBACK = [
 
 # ═══════════════════════════════════════════════
 # VERİTABANI
-# store       → watchlist, best_emas (JSON)
-# price_cache → hisse fiyat verisi (JSON, günlük)
 # ═══════════════════════════════════════════════
 def db_connect():
     if not DATABASE_URL:
@@ -99,14 +96,12 @@ def db_init():
         return
     try:
         with conn.cursor() as cur:
-            # Genel anahtar-değer deposu
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS store (
                     key   TEXT PRIMARY KEY,
                     value TEXT NOT NULL
                 )
             """)
-            # Fiyat cache tablosu – tarih sütunuyla
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS price_cache (
                     ticker     TEXT PRIMARY KEY,
@@ -151,14 +146,11 @@ def db_set(key, value):
     finally:
         conn.close()
 
-# ─── Fiyat cache – PostgreSQL'e kaydet/oku ───
 def pc_save(ticker, df):
-    """DataFrame'i PostgreSQL'e kaydet."""
     conn = db_connect()
     if not conn:
         return
     try:
-        # DataFrame → JSON (tarihleri string yap)
         data = df.reset_index()
         data['datetime'] = data['datetime'].astype(str)
         payload = data.to_json(orient='records')
@@ -176,7 +168,6 @@ def pc_save(ticker, df):
         conn.close()
 
 def pc_load(ticker):
-    """PostgreSQL'den oku. Bugün çekilmişse döner, eskiyse None."""
     conn = db_connect()
     if not conn:
         return None
@@ -189,11 +180,10 @@ def pc_load(ticker):
             row = cur.fetchone()
             if not row:
                 return None
-            fetched_at = row[1]   # date objesi
+            fetched_at = row[1]
             today      = datetime.now(pytz.timezone('Europe/Istanbul')).date()
-            # Borsanın kapandığı 18:00'den sonra çekilmişse yarın için de geçerli
             if fetched_at < today:
-                return None  # Eski veri, yeniden çek
+                return None
             records = json.loads(row[0])
             df = pd.DataFrame(records)
             df['datetime'] = pd.to_datetime(df['datetime'])
@@ -209,7 +199,6 @@ def pc_load(ticker):
         conn.close()
 
 def pc_count_today():
-    """Bugün kaç hisse verisi DB'de var?"""
     conn = db_connect()
     if not conn:
         return 0
@@ -252,20 +241,17 @@ def wl_all_ids():
         conn.close()
 
 def ema_get(ticker):
-    """{"daily":[s,l], "weekly":[s,l]} formatinda dondurur."""
     val = db_get(f"ema:{ticker}") if DATABASE_URL else _mem_emas.get(ticker)
     if isinstance(val, dict):
         return {
             "daily":  tuple(val.get("daily",  [9, 21])),
             "weekly": tuple(val.get("weekly", [9, 21])),
         }
-    # Eski format (tuple) - geriye donuk uyumluluk
     if isinstance(val, (list, tuple)) and len(val) == 2:
         return {"daily": tuple(val), "weekly": tuple(val)}
     return {"daily": (9, 21), "weekly": (9, 21)}
 
 def ema_set(ticker, pairs_dict):
-    """pairs_dict: {"daily":(s,l), "weekly":(s,l)}"""
     payload = {
         "daily":  list(pairs_dict.get("daily",  (9,21))),
         "weekly": list(pairs_dict.get("weekly", (9,21))),
@@ -327,33 +313,114 @@ def calc_rsi(series, length=14):
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
+def detect_divergence(df, window=60, min_bars=5, max_bars=40):
+    """
+    RSI Pozitif (Bullish) ve Negatif (Bearish) uyumsuzluk tespiti.
+
+    Bullish : Fiyat düşük dip  + RSI yüksek dip  → Yukarı dönüş sinyali
+    Bearish : Fiyat yüksek tepe + RSI düşük tepe → Aşağı dönüş sinyali
+
+    Döner: (divergence_type: str, message: str) veya (None, None)
+    """
+    try:
+        if "RSI" not in df.columns:
+            df = df.copy()
+            df["RSI"] = calc_rsi(df["Close"], 14)
+
+        df = df.dropna(subset=["Close", "RSI"]).tail(window)
+
+        if len(df) < min_bars + 5:
+            return None, None
+
+        closes = df["Close"].values
+        rsis   = df["RSI"].values
+        last_idx = len(closes) - 1
+
+        # ── Dip ve tepe noktaları ──
+        price_lows,  _ = find_peaks(-closes, distance=min_bars)
+        rsi_lows,    _ = find_peaks(-rsis,   distance=min_bars)
+        price_highs, _ = find_peaks(closes,  distance=min_bars)
+        rsi_highs,   _ = find_peaks(rsis,    distance=min_bars)
+
+        # ── BULLISH DIVERGENCE ──
+        recent_price_lows = price_lows[price_lows >= last_idx - max_bars]
+        recent_rsi_lows   = rsi_lows[rsi_lows     >= last_idx - max_bars]
+
+        if len(recent_price_lows) >= 2 and len(recent_rsi_lows) >= 2:
+            p1, p2 = recent_price_lows[-2], recent_price_lows[-1]
+            r1, r2 = recent_rsi_lows[-2],   recent_rsi_lows[-1]
+
+            price_lower_low = closes[p2] < closes[p1]
+            rsi_higher_low  = rsis[r2]   > rsis[r1]
+
+            if price_lower_low and rsi_higher_low:
+                strength = "GÜÇLÜ 🔥" if rsis[r2] < 40 else "ORTA"
+                return (
+                    "Bullish Diverjans",
+                    f"📈 POZİTİF UYUMSUZLUK [{strength}]\n"
+                    f"   Fiyat dip: {closes[p1]:.2f} → {closes[p2]:.2f} ↘\n"
+                    f"   RSI  dip: {rsis[r1]:.1f} → {rsis[r2]:.1f} ↗\n"
+                    f"   ⚡ Yukarı dönüş sinyali!"
+                )
+
+        # Tek dip – zayıf bullish
+        elif len(recent_price_lows) >= 1 and len(recent_rsi_lows) >= 1:
+            p2 = recent_price_lows[-1]
+            r2 = recent_rsi_lows[-1]
+            if p2 >= last_idx - 10 and rsis[r2] < 35:
+                return (
+                    "Bullish Diverjans",
+                    f"📈 POZİTİF UYUMSUZLUK [ZAYIF]\n"
+                    f"   RSI dip: {rsis[r2]:.1f} — Aşırı Satım bölgesi\n"
+                    f"   ⚡ Toparlanma ihtimali"
+                )
+
+        # ── BEARISH DIVERGENCE ──
+        recent_price_highs = price_highs[price_highs >= last_idx - max_bars]
+        recent_rsi_highs   = rsi_highs[rsi_highs     >= last_idx - max_bars]
+
+        if len(recent_price_highs) >= 2 and len(recent_rsi_highs) >= 2:
+            p1, p2 = recent_price_highs[-2], recent_price_highs[-1]
+            r1, r2 = recent_rsi_highs[-2],   recent_rsi_highs[-1]
+
+            price_higher_high = closes[p2] > closes[p1]
+            rsi_lower_high    = rsis[r2]   < rsis[r1]
+
+            if price_higher_high and rsi_lower_high:
+                strength = "GÜÇLÜ 🔥" if rsis[r2] > 60 else "ORTA"
+                return (
+                    "Bearish Diverjans",
+                    f"📉 NEGATİF UYUMSUZLUK [{strength}]\n"
+                    f"   Fiyat tepe: {closes[p1]:.2f} → {closes[p2]:.2f} ↗\n"
+                    f"   RSI  tepe: {rsis[r1]:.1f} → {rsis[r2]:.1f} ↘\n"
+                    f"   ⚡ Aşağı dönüş sinyali!"
+                )
+
+        # Tek tepe – zayıf bearish
+        elif len(recent_price_highs) >= 1 and len(recent_rsi_highs) >= 1:
+            p2 = recent_price_highs[-1]
+            r2 = recent_rsi_highs[-1]
+            if p2 >= last_idx - 10 and rsis[r2] > 65:
+                return (
+                    "Bearish Diverjans",
+                    f"📉 NEGATİF UYUMSUZLUK [ZAYIF]\n"
+                    f"   RSI tepe: {rsis[r2]:.1f} — Aşırı Alım bölgesi\n"
+                    f"   ⚡ Düzeltme ihtimali"
+                )
+
+    except Exception as e:
+        print(f"Diverjans hata: {e}")
+
+    return None, None
+
+
 # ═══════════════════════════════════════════════
 # TwelveData – kredi sayacı farkında
 # ═══════════════════════════════════════════════
-_api_credits_used = 0   # Oturum boyunca kullanılan kredi sayacı
-
 def get_all_bist_tickers():
-    if TWELVE_KEY:
-        for exchange in ['BIST', 'XIST']:
-            try:
-                resp = requests.get(
-                    f"https://api.twelvedata.com/stocks?exchange={exchange}&apikey={TWELVE_KEY}",
-                    timeout=15
-                ).json()
-                if resp.get('status') != 'error':
-                    t = [i['symbol'] for i in resp.get('data',[]) if i.get('exchange') in ('BIST','XIST')]
-                    if t:
-                        return t[:600]
-            except Exception:
-                pass
     return BIST_FALLBACK
 
 def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
-    """
-    Yahoo Finance v8 API - dogrudan HTTP.
-    interval: 1d (gunluk), 1wk (haftalik)
-    range_:   2y, 5y
-    """
     try:
         url     = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}.IS?interval={interval}&range={range_}"
         headers = {
@@ -369,7 +436,7 @@ def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
         result = data.get("chart", {}).get("result", [])
         if not result:
             return pd.DataFrame()
-        r         = result[0]
+        r          = result[0]
         timestamps = r.get("timestamp", [])
         ohlcv      = r.get("indicators", {}).get("quote", [{}])[0]
         if not timestamps:
@@ -392,12 +459,10 @@ def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
         return pd.DataFrame()
 
 def fetch_alphavantage(ticker):
-    """Alpha Vantage - ucretsiz 25 istek/gun, BIST .IS formatini destekler."""
     av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
     if not av_key:
         return pd.DataFrame()
     try:
-        # TIME_SERIES_DAILY - adjusted artik premium, daily kullan
         url  = (
             f"https://www.alphavantage.co/query"
             f"?function=TIME_SERIES_DAILY"
@@ -428,7 +493,6 @@ def fetch_alphavantage(ticker):
         return pd.DataFrame()
 
 def resample_weekly(df_daily):
-    """Gunluk veriyi haftaliga donustur."""
     if df_daily.empty:
         return pd.DataFrame()
     df = df_daily.resample("W").agg({
@@ -441,19 +505,10 @@ def resample_weekly(df_daily):
     df.index.name = "datetime"
     return df
 
-
 def get_data(ticker):
-    """
-    Gunluk ve haftalik DataFrame dondurir: (df_daily, df_weekly)
-    1. DB cache kontrol
-    2. Yahoo Finance dogrudan
-    3. Alpha Vantage yedek
-    4. Haftalik yoksa gunlukten resample et
-    """
     df_daily  = pd.DataFrame()
     df_weekly = pd.DataFrame()
 
-    # DB cache
     if DATABASE_URL:
         c = pc_load(f"d:{ticker}")
         if c is not None and not c.empty:
@@ -462,7 +517,6 @@ def get_data(ticker):
         if c is not None and not c.empty:
             df_weekly = c
 
-    # Gunluk eksikse cek
     if df_daily.empty:
         r = fetch_yahoo_direct(ticker, interval="1d", range_="2y")
         if isinstance(r, pd.DataFrame) and not r.empty:
@@ -475,7 +529,6 @@ def get_data(ticker):
             df_daily = r
             if DATABASE_URL: pc_save(f"d:{ticker}", r)
 
-    # Haftalik: once Yahoo'dan direkt cek, yoksa gunlugu resample et
     if df_weekly.empty:
         r = fetch_yahoo_direct(ticker, interval="1wk", range_="5y")
         if isinstance(r, pd.DataFrame) and not r.empty:
@@ -489,16 +542,11 @@ def get_data(ticker):
 
 
 def find_best_ema_pair(ticker, chat_id=None):
-    """
-    Hem gunluk hem haftalik icin ayri ayri en iyi EMA cifti bulur.
-    Donen: {"daily": (s,l), "weekly": (s,l)} veya None (iptal)
-    """
     df_daily, df_weekly = get_data(ticker)
     pairs  = [(3,8),(5,13),(8,21),(9,21),(12,26),(20,50),(10,30)]
     result = {}
 
     for label, df in [("daily", df_daily), ("weekly", df_weekly)]:
-        # İptal kontrolü
         if chat_id and is_cancelled(chat_id, "optimize"):
             return None
         min_bars = 50 if label == "weekly" else 100
@@ -528,7 +576,7 @@ def find_best_ema_pair(ticker, chat_id=None):
                 best_profit, best_pair = profit, (short, long_)
         result[label] = best_pair
 
-    return result  # {"daily": (s,l), "weekly": (s,l)}
+    return result
 
 
 def send_long_message(chat_id, text):
@@ -548,7 +596,7 @@ def send_long_message(chat_id, text):
 
 def scan_all_stocks(chat_id, limit=None, ticker_list=None):
     chat_id = str(chat_id)
-    # Tek hisse modu
+
     if ticker_list:
         tickers = ticker_list
     else:
@@ -562,9 +610,8 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
 
     total = len(tickers)
 
-    # ── ADIM 1: Cache durumunu özetle, eksikleri indir ──
-    cached   = [t for t in tickers if _db_cached_today(t)]
-    missing  = [t for t in tickers if t not in [c for c in cached]]
+    cached  = [t for t in tickers if _db_cached_today(t)]
+    missing = [t for t in tickers if t not in cached]
     to_fetch = missing
 
     bot.send_message(chat_id,
@@ -574,13 +621,13 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
         f"🚫 İptal için: /iptal check"
     )
 
-    # Eksik hisseleri indir
     fetched = 0
     for i, ticker in enumerate(to_fetch):
         if is_cancelled(chat_id, "check"):
-            bot.send_message(chat_id, "Indirme iptal edildi."); return
+            bot.send_message(chat_id, "İndirme iptal edildi."); return
         df_d, df_w = get_data(ticker)
-        if (isinstance(df_d, pd.DataFrame) and not df_d.empty) or            (isinstance(df_w, pd.DataFrame) and not df_w.empty):
+        if (isinstance(df_d, pd.DataFrame) and not df_d.empty) or \
+           (isinstance(df_w, pd.DataFrame) and not df_w.empty):
             fetched += 1
         if (i+1) % 20 == 0:
             bot.send_message(chat_id, f"📥 İndiriliyor: {i+1}/{len(to_fetch)} ({fetched} başarılı)")
@@ -588,7 +635,6 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
 
     bot.send_message(chat_id, "✅ Veri hazır, analiz başlıyor...")
 
-    # ── ADIM 2: Analiz (hızlı, cache'den okur) ──
     messages = []; no_data = 0
 
     for ticker in tickers:
@@ -605,18 +651,23 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
             if not has_daily and not has_weekly:
                 no_data += 1; continue
 
-            ep    = ema_get(ticker)
-            ep_d  = ep["daily"]
-            ep_w  = ep["weekly"]
+            ep   = ema_get(ticker)
+            ep_d = ep["daily"]
+            ep_w = ep["weekly"]
             signals   = []
             rsi_lines = []
 
-            # ── GÜNLÜK ──
+            # ══════════════════════════════
+            # GÜNLÜK ANALİZ
+            # ══════════════════════════════
             if has_daily:
                 d = df_d.copy()
+
+                # RSI — her zaman göster
                 rsi_series = calc_rsi(d["Close"], 14).dropna()
-                if len(rsi_series) > 0:
-                    rsi_d = float(rsi_series.iloc[-1])
+                rsi_d = float(rsi_series.iloc[-1]) if len(rsi_series) > 0 else None
+
+                if rsi_d is not None:
                     if rsi_d >= 70:
                         rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
                     elif rsi_d <= 30:
@@ -624,56 +675,92 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
                     else:
                         rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
 
+                # EMA — kesişim veya mevcut trend
                 ema_s = calc_ema(d["Close"], ep_d[0])
                 ema_l = calc_ema(d["Close"], ep_d[1])
                 ef = pd.DataFrame({"s": ema_s, "l": ema_l}).dropna()
-                if len(ef) >= 2:
-                    if ef["s"].iloc[-2] <= ef["l"].iloc[-2] and ef["s"].iloc[-1] > ef["l"].iloc[-1]:
-                        signals.append("🟢↑ Günlük AL - EMA Kesişim")
-                    elif ef["s"].iloc[-2] >= ef["l"].iloc[-2] and ef["s"].iloc[-1] < ef["l"].iloc[-1]:
-                        signals.append("🔴↓ Günlük SAT - EMA Kesişim")
 
+                if len(ef) >= 2:
+                    cross_up   = ef["s"].iloc[-2] <= ef["l"].iloc[-2] and ef["s"].iloc[-1] > ef["l"].iloc[-1]
+                    cross_down = ef["s"].iloc[-2] >= ef["l"].iloc[-2] and ef["s"].iloc[-1] < ef["l"].iloc[-1]
+                    trend_up   = ef["s"].iloc[-1] > ef["l"].iloc[-1]
+                    trend_down = ef["s"].iloc[-1] < ef["l"].iloc[-1]
+
+                    if cross_up:
+                        signals.append(f"🟢↑ Günlük AL — EMA Taze Kesişim ({ep_d[0]}/{ep_d[1]})")
+                    elif cross_down:
+                        signals.append(f"🔴↓ Günlük SAT — EMA Taze Kesişim ({ep_d[0]}/{ep_d[1]})")
+                    elif trend_up and rsi_d and 40 <= rsi_d <= 65:
+                        signals.append(f"📈 Günlük YUKARI TREND — EMA({ep_d[0]}>{ep_d[1]}) RSI Uyumlu")
+                    elif trend_down and rsi_d and 35 <= rsi_d <= 60:
+                        signals.append(f"📉 Günlük AŞAĞI TREND — EMA({ep_d[0]}<{ep_d[1]})")
+
+                # Diverjans
                 d["RSI"] = calc_rsi(d["Close"], 14)
                 dt, dm = detect_divergence(d)
                 if dt:
-                    signals.append(f"⚡ Gunluk {dt} - {dm}")
+                    signals.append(dm)
 
-            # ── HAFTALIK ──
+            # ══════════════════════════════
+            # HAFTALIK ANALİZ
+            # ══════════════════════════════
             if has_weekly:
                 w = df_w.copy()
+
+                # RSI — her zaman göster
                 rsi_series_w = calc_rsi(w["Close"], 14).dropna()
-                if len(rsi_series_w) > 0:
-                    rsi_w = float(rsi_series_w.iloc[-1])
-                    ema_sw = calc_ema(w["Close"], ep_w[0])
-                    ema_lw = calc_ema(w["Close"], ep_w[1])
-                    trend  = "YUKARI" if ema_sw.iloc[-1] > ema_lw.iloc[-1] else "ASAGI"
+                rsi_w = float(rsi_series_w.iloc[-1]) if len(rsi_series_w) > 0 else None
+
+                ema_sw = calc_ema(w["Close"], ep_w[0])
+                ema_lw = calc_ema(w["Close"], ep_w[1])
+                wf = pd.DataFrame({"s": ema_sw, "l": ema_lw}).dropna()
+                trend_str = "YUKARI" if (len(wf) > 0 and wf["s"].iloc[-1] > wf["l"].iloc[-1]) else "ASAGI"
+
+                if rsi_w is not None:
                     if rsi_w >= 70:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM | Trend:{trend}")
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM | Trend:{trend_str}")
                     elif rsi_w <= 30:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM | Trend:{trend}")
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM | Trend:{trend_str}")
                     else:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend}")
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend_str}")
 
-                ema_sw2 = calc_ema(w["Close"], ep_w[0])
-                ema_lw2 = calc_ema(w["Close"], ep_w[1])
-                wf = pd.DataFrame({"s": ema_sw2, "l": ema_lw2}).dropna()
+                # EMA — kesişim veya mevcut trend
                 if len(wf) >= 2:
-                    if wf["s"].iloc[-2] <= wf["l"].iloc[-2] and wf["s"].iloc[-1] > wf["l"].iloc[-1]:
-                        signals.append("🟢🟢↑↑ Haftalık AL - EMA Kesişim (GÜÇLÜ)")
-                    elif wf["s"].iloc[-2] >= wf["l"].iloc[-2] and wf["s"].iloc[-1] < wf["l"].iloc[-1]:
-                        signals.append("🔴🔴↓↓ Haftalık SAT - EMA Kesişim (GÜÇLÜ)")
+                    cross_up_w   = wf["s"].iloc[-2] <= wf["l"].iloc[-2] and wf["s"].iloc[-1] > wf["l"].iloc[-1]
+                    cross_down_w = wf["s"].iloc[-2] >= wf["l"].iloc[-2] and wf["s"].iloc[-1] < wf["l"].iloc[-1]
+                    trend_up_w   = wf["s"].iloc[-1] > wf["l"].iloc[-1]
+                    trend_down_w = wf["s"].iloc[-1] < wf["l"].iloc[-1]
 
+                    if cross_up_w:
+                        signals.append(f"🟢🟢↑↑ Haftalık AL — Taze Kesişim GÜÇLÜ ({ep_w[0]}/{ep_w[1]})")
+                    elif cross_down_w:
+                        signals.append(f"🔴🔴↓↓ Haftalık SAT — Taze Kesişim GÜÇLÜ ({ep_w[0]}/{ep_w[1]})")
+                    elif trend_up_w and rsi_w and 40 <= rsi_w <= 65:
+                        signals.append(f"📈📈 Haftalık YUKARI TREND — EMA Uyumlu (GÜÇLÜ)")
+                    elif trend_down_w and rsi_w and 35 <= rsi_w <= 60:
+                        signals.append(f"📉📉 Haftalık AŞAĞI TREND — EMA Uyumlu (GÜÇLÜ)")
+
+                # Diverjans — haftalık için geniş pencere
                 w["RSI"] = calc_rsi(w["Close"], 14)
-                dt_w, dm_w = detect_divergence(w, window=40)
+                dt_w, dm_w = detect_divergence(w, window=80, min_bars=3, max_bars=60)
                 if dt_w:
-                    signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
+                    signals.append(f"[HAFTALIK] {dm_w}")
 
+            # ══════════════════════════════
+            # GÖSTER / GİZLE KOŞULU
+            # ══════════════════════════════
             rsi_extreme = any("ASIRI" in r for r in rsi_lines)
-            show = signals or rsi_extreme or (ticker_list is not None)
+            has_signal  = bool(signals)
+            # Tek hisse sorgusunda (checksingle/check THYAO) her zaman göster
+            force_show  = ticker_list is not None
+
+            show = has_signal or rsi_extreme or force_show
+
             if show:
                 vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
-                msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else '(Düşük Vol)'}"]
-                msg_lines += signals
+                msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else ''}".strip()]
+                if signals:
+                    msg_lines += signals
                 msg_lines += rsi_lines
                 msg_lines.append(f"📐 EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
                 msg_lines.append(f"📈 [TradingView — {ticker}](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})")
@@ -686,11 +773,12 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
     else:
-        bot.send_message(chat_id, f"✅ Tarama bitti. {total} hisse tarandı ({no_data} veri yok).\n📭 Sinyal bulunamadı.")
+        bot.send_message(chat_id,
+            f"✅ Tarama bitti. {total} hisse tarandı ({no_data} veri yok).\n"
+            f"📭 Sinyal bulunamadı.")
 
 
 def _db_cached_today(ticker):
-    """Bu hissenin bugün DB cache'de olup olmadığını kontrol eder."""
     if not DATABASE_URL:
         return False
     conn = db_connect()
@@ -730,6 +818,70 @@ def _run_optimize(chat_id, ticker):
     except Exception as e:
         bot.send_message(chat_id, f"Hata: {e}")
 
+# ═══════════════════════════════════════════════
+# Bot Komutları
+# ═══════════════════════════════════════════════
+@bot.message_handler(commands=['start', 'help'])
+def send_welcome(message):
+    bot.reply_to(message,
+        "📊 *BIST Teknik Analiz Botu*\n\n"
+        "/check — Tüm listeyi tara\n"
+        "/check THYAO — Tek hisse analiz\n"
+        "/check 50 — Rastgele 50 hisse\n"
+        "/checksingle THYAO — Detaylı debug çıktısı\n"
+        "/optimize THYAO — EMA optimizasyonu\n"
+        "/watchlist — İzleme listeni gör\n"
+        "/addall — Tüm BIST hisselerini ekle\n"
+        "/iptal optimize — Optimize iptal\n"
+        "/iptal check — Tarama iptal"
+    )
+
+@bot.message_handler(commands=['iptal'])
+def iptal(message):
+    chat_id = str(message.chat.id)
+    parts   = message.text.strip().split()
+    op      = parts[1].lower() if len(parts) > 1 else "check"
+    get_cancel_flag(chat_id, op).set()
+    bot.reply_to(message, f"🚫 '{op}' işlemi iptal sinyali gönderildi.")
+
+@bot.message_handler(commands=['addall'])
+def add_all(message):
+    chat_id = str(message.chat.id)
+    bot.reply_to(message, "📋 Tüm BIST hisseleri listeye ekleniyor...")
+    tickers = get_all_bist_tickers()
+    wl_set(chat_id, tickers)
+    bot.send_message(chat_id, f"✅ {len(tickers)} hisse eklendi.")
+
+@bot.message_handler(commands=['add'])
+def add_ticker(message):
+    chat_id = str(message.chat.id)
+    parts   = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Kullanim: /add THYAO"); return
+    ticker  = parts[1].upper().replace(".IS","")
+    lst     = wl_get(chat_id)
+    if ticker not in lst:
+        lst.append(ticker)
+        wl_set(chat_id, lst)
+        bot.reply_to(message, f"✅ {ticker} eklendi. ({len(lst)} hisse)")
+    else:
+        bot.reply_to(message, f"ℹ️ {ticker} zaten listede.")
+
+@bot.message_handler(commands=['remove'])
+def remove_ticker(message):
+    chat_id = str(message.chat.id)
+    parts   = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Kullanim: /remove THYAO"); return
+    ticker  = parts[1].upper().replace(".IS","")
+    lst     = wl_get(chat_id)
+    if ticker in lst:
+        lst.remove(ticker)
+        wl_set(chat_id, lst)
+        bot.reply_to(message, f"🗑 {ticker} silindi. ({len(lst)} hisse)")
+    else:
+        bot.reply_to(message, f"ℹ️ {ticker} listede yok.")
+
 @bot.message_handler(commands=['optimize'])
 def optimize(message):
     try:
@@ -740,48 +892,62 @@ def optimize(message):
             f"🚫 İptal için: /iptal optimize")
         threading.Thread(target=_run_optimize, args=(chat_id, ticker), daemon=True).start()
     except IndexError:
-        bot.reply_to(message, "Kullanim: /optimize HEKTS")
+        bot.reply_to(message, "Kullanim: /optimize THYAO")
     except Exception as e:
         bot.reply_to(message, f"Hata: {e}")
 
 @bot.message_handler(commands=['checksingle'])
 def check_single(message):
-    """Tek hisse tam debug ciktisi - RSI, EMA, sinyal durumlarini goster."""
     try:
         ticker = message.text.split()[1].upper().replace('.IS','')
     except IndexError:
-        bot.reply_to(message, "Kullanim: /checksingle HEKTS"); return
+        bot.reply_to(message, "Kullanim: /checksingle THYAO"); return
 
-    bot.reply_to(message, f"{ticker} analiz ediliyor...")
+    bot.reply_to(message, f"🔍 {ticker} analiz ediliyor...")
     df_d, df_w = get_data(ticker)
     lines = []
 
-    # Günlük
     if isinstance(df_d, pd.DataFrame) and not df_d.empty:
         lines.append(f"📅 Günlük veri: {len(df_d)} bar")
         rsi_s = calc_rsi(df_d["Close"], 14).dropna()
         lines.append(f"RSI serisi uzunluk: {len(rsi_s)}")
         if len(rsi_s) > 0:
-            lines.append(f"RSI-G son deger: {rsi_s.iloc[-1]:.2f}")
+            lines.append(f"RSI-G son değer: {rsi_s.iloc[-1]:.2f}")
         else:
             lines.append("RSI-G: HESAPLANAMADI")
         lines.append(f"Close son: {df_d['Close'].iloc[-1]:.2f}")
+
+        # Diverjans testi
+        df_d["RSI"] = calc_rsi(df_d["Close"], 14)
+        dt, dm = detect_divergence(df_d)
+        if dt:
+            lines.append(f"--- Günlük Diverjans ---")
+            lines.append(dm)
+        else:
+            lines.append("Günlük Diverjans: YOK")
     else:
         lines.append("📅 Günlük veri: ❌ YOK")
 
-    # Haftalık
     if isinstance(df_w, pd.DataFrame) and not df_w.empty:
         lines.append(f"📆 Haftalık veri: {len(df_w)} bar")
         rsi_sw = calc_rsi(df_w["Close"], 14).dropna()
         lines.append(f"RSI-H serisi uzunluk: {len(rsi_sw)}")
         if len(rsi_sw) > 0:
-            lines.append(f"RSI-H son deger: {rsi_sw.iloc[-1]:.2f}")
+            lines.append(f"RSI-H son değer: {rsi_sw.iloc[-1]:.2f}")
         else:
             lines.append("RSI-H: HESAPLANAMADI")
+
+        # Haftalık diverjans testi
+        df_w["RSI"] = calc_rsi(df_w["Close"], 14)
+        dt_w, dm_w = detect_divergence(df_w, window=80, min_bars=3, max_bars=60)
+        if dt_w:
+            lines.append(f"--- Haftalık Diverjans ---")
+            lines.append(dm_w)
+        else:
+            lines.append("Haftalık Diverjans: YOK")
     else:
         lines.append("📆 Haftalık veri: ❌ YOK")
 
-    # EMA ayarları
     ep = ema_get(ticker)
     lines.append(f"EMA G:{ep['daily']} H:{ep['weekly']}")
 
@@ -792,7 +958,6 @@ def manual_check(message):
     chat_id = str(message.chat.id)
     parts   = message.text.strip().split()
 
-    # /check THYAO → tek hisse, hızlı test
     if len(parts) > 1 and not parts[1].isdigit():
         ticker = parts[1].upper().replace(".IS","")
         reset_cancel_flag(chat_id, "check")
@@ -802,7 +967,6 @@ def manual_check(message):
     if not wl_get(chat_id):
         bot.reply_to(message, "📭 Liste boş! Önce /addall yaz."); return
 
-    # /check 50 → limit
     limit = None
     if len(parts) > 1:
         try:
@@ -822,12 +986,14 @@ def show_list(message):
     else:
         bot.reply_to(message, "📭 Liste boş — /addall yaz")
 
+# ═══════════════════════════════════════════════
+# Otomatik tarama – her gün 18:05
+# ═══════════════════════════════════════════════
 def auto_scan():
     tr_tz = pytz.timezone('Europe/Istanbul')
     scanned_date = None
     while True:
         now = datetime.now(tr_tz)
-        # 18:05'te tara – borsa kapandıktan 5 dk sonra
         if now.hour == 18 and now.minute >= 5 and now.minute < 10 and scanned_date != now.date():
             scanned_date = now.date()
             for chat_id in wl_all_ids():
