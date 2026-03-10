@@ -848,6 +848,49 @@ def optimize(message):
     except Exception as e:
         bot.reply_to(message, f"Hata: {e}")
 
+@bot.message_handler(commands=['checksingle'])
+def check_single(message):
+    """Tek hisse tam debug ciktisi - RSI, EMA, sinyal durumlarini goster."""
+    try:
+        ticker = message.text.split()[1].upper().replace('.IS','')
+    except IndexError:
+        bot.reply_to(message, "Kullanim: /checksingle HEKTS"); return
+
+    bot.reply_to(message, f"{ticker} analiz ediliyor...")
+    df_d, df_w = get_data(ticker)
+    lines = []
+
+    # Günlük
+    if isinstance(df_d, pd.DataFrame) and not df_d.empty:
+        lines.append(f"Gunluk veri: {len(df_d)} bar")
+        rsi_s = calc_rsi(df_d["Close"], 14).dropna()
+        lines.append(f"RSI serisi uzunluk: {len(rsi_s)}")
+        if len(rsi_s) > 0:
+            lines.append(f"RSI-G son deger: {rsi_s.iloc[-1]:.2f}")
+        else:
+            lines.append("RSI-G: HESAPLANAMADI")
+        lines.append(f"Close son: {df_d['Close'].iloc[-1]:.2f}")
+    else:
+        lines.append("Gunluk veri: YOK")
+
+    # Haftalık
+    if isinstance(df_w, pd.DataFrame) and not df_w.empty:
+        lines.append(f"Haftalik veri: {len(df_w)} bar")
+        rsi_sw = calc_rsi(df_w["Close"], 14).dropna()
+        lines.append(f"RSI-H serisi uzunluk: {len(rsi_sw)}")
+        if len(rsi_sw) > 0:
+            lines.append(f"RSI-H son deger: {rsi_sw.iloc[-1]:.2f}")
+        else:
+            lines.append("RSI-H: HESAPLANAMADI")
+    else:
+        lines.append("Haftalik veri: YOK")
+
+    # EMA ayarları
+    ep = ema_get(ticker)
+    lines.append(f"EMA G:{ep['daily']} H:{ep['weekly']}")
+
+    bot.send_message(str(message.chat.id), "\n".join(lines))
+
 @bot.message_handler(commands=['check'])
 def manual_check(message):
     chat_id = str(message.chat.id)
