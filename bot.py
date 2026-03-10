@@ -546,17 +546,19 @@ def send_long_message(chat_id, text):
         bot.send_message(chat_id, part, parse_mode='Markdown')
         time.sleep(0.5)
 
-def scan_all_stocks(chat_id, limit=None):
+def scan_all_stocks(chat_id, limit=None, ticker_list=None):
     chat_id = str(chat_id)
-    tickers = wl_get(chat_id)
-    if not tickers:
-        bot.send_message(chat_id, "Liste bos! /addall yazin."); return
-
-    # Limit uygula
-    if limit and limit < len(tickers):
-        import random
-        tickers = random.sample(tickers, limit)
-        bot.send_message(chat_id, f"Not: {limit} rastgele hisse taranacak. Tum liste icin /check yazin.")
+    # Tek hisse modu
+    if ticker_list:
+        tickers = ticker_list
+    else:
+        tickers = wl_get(chat_id)
+        if not tickers:
+            bot.send_message(chat_id, "📭 Liste boş! /addall yaz."); return
+        if limit and limit < len(tickers):
+            import random
+            tickers = random.sample(tickers, limit)
+            bot.send_message(chat_id, f"ℹ️ {limit} rastgele hisse taranacak.")
 
     total = len(tickers)
 
@@ -569,7 +571,7 @@ def scan_all_stocks(chat_id, limit=None):
         f"🔍 *{total} hisse taranacak*\n"
         f"💾 Cache: {len(cached)} hazır | 📡 İndirilecek: {len(to_fetch)}\n"
         f"{'⏱ Tahmini: ~'+str(int(len(to_fetch)*TD_DELAY//60))+' dk' if to_fetch else '⚡ Anında basliyor!'}\n"
-        f"🚫 İptal: _iptal check_ yaz"
+        f"🚫 İptal için: /iptal check"
     )
 
     # Eksik hisseleri indir
@@ -667,7 +669,8 @@ def scan_all_stocks(chat_id, limit=None):
                     signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
 
             rsi_extreme = any("ASIRI" in r for r in rsi_lines)
-            if signals or rsi_extreme:
+            show = signals or rsi_extreme or (ticker_list is not None)
+            if show:
                 vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
                 msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else '(Düşük Vol)'}"]
                 msg_lines += signals
@@ -734,7 +737,7 @@ def optimize(message):
         chat_id = str(message.chat.id)
         bot.reply_to(message,
             f"⚙️ *{ticker}* optimize başlıyor...\n"
-            f"🚫 İptal: _iptal optimize_ yaz")
+            f"🚫 İptal için: /iptal optimize")
         threading.Thread(target=_run_optimize, args=(chat_id, ticker), daemon=True).start()
     except IndexError:
         bot.reply_to(message, "Kullanim: /optimize HEKTS")
@@ -787,16 +790,26 @@ def check_single(message):
 @bot.message_handler(commands=['check'])
 def manual_check(message):
     chat_id = str(message.chat.id)
+    parts   = message.text.strip().split()
+
+    # /check THYAO → tek hisse, hızlı test
+    if len(parts) > 1 and not parts[1].isdigit():
+        ticker = parts[1].upper().replace(".IS","")
+        reset_cancel_flag(chat_id, "check")
+        threading.Thread(target=scan_all_stocks, args=(chat_id, None, [ticker]), daemon=True).start()
+        return
+
     if not wl_get(chat_id):
-        bot.reply_to(message, "Liste bos! Once /addall yazin."); return
-    # Limit desteği: /check 50 → sadece 50 hisse
-    parts = message.text.strip().split()
+        bot.reply_to(message, "📭 Liste boş! Önce /addall yaz."); return
+
+    # /check 50 → limit
     limit = None
     if len(parts) > 1:
         try:
             limit = int(parts[1])
         except ValueError:
-            bot.reply_to(message, "Kullanim: /check veya /check 50"); return
+            bot.reply_to(message, "Kullanım: /check | /check 50 | /check THYAO"); return
+
     reset_cancel_flag(chat_id, "check")
     threading.Thread(target=scan_all_stocks, args=(chat_id, limit), daemon=True).start()
 
