@@ -1,0 +1,368 @@
+import os
+import time
+import threading
+from datetime import datetime
+import telebot
+import yfinance as yf
+import pandas as pd
+import pandas_ta as ta
+from scipy.signal import find_peaks
+import requests
+from dotenv import load_dotenv
+import pytz
+
+load_dotenv()
+TOKEN = os.getenv('TELEGRAM_TOKEN')
+TWELVE_KEY = os.getenv('TWELVE_DATA_KEY')
+bot = telebot.TeleBot(TOKEN)
+
+# Memory (Render free tier'da restart olunca sıfırlanır)
+watchlist = {}
+best_emas = {}
+
+# ─────────────────────────────────────────────
+# Tüm BIST ticker listesini TwelveData'dan çek
+# ─────────────────────────────────────────────
+def get_all_bist_tickers():
+    if not TWELVE_KEY:
+        return []
+    try:
+        url = f"https://api.twelvedata.com/stocks?exchange=XIST&apikey={TWELVE_KEY}"
+        resp = requests.get(url, timeout=15).json()
+        if resp.get('status') == 'error':
+            return []
+        data = resp.get('data', [])
+        return [item['symbol'] for item in data if item.get('exchange') == 'XIST'][:600]
+    except Exception:
+        return []
+
+# ─────────────────────────────────────────────
+# Fiyat verisi çek (yfinance önce, TwelveData yedek)
+# BUG FIX: Yeni yfinance sürümleri MultiIndex kolon döner →
+#          get_level_values(0) ile düzleştiriyoruz
+# ─────────────────────────────────────────────
+def get_data(ticker, period="2y", interval="1d"):
+    try:
+        df = yf.download(
+            f"{ticker}.IS",
+            period=period,
+            interval=interval,
+            auto_adjust=True,
+            progress=False
+        )
+        # YENİ yfinance (>=0.2.x) MultiIndex kolon döner: ('Close', 'HEKTS.IS')
+        # Bunu düzleştirmezsen df['Close'] KeyError fırlatır
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+        if not df.empty and len(df) > 10:
+            return df
+    except Exception:
+        pass
+
+    # TwelveData yedek
+    if TWELVE_KEY:
+        try:
+            url = (
+                f"https://api.twelvedata.com/time_series"
+                f"?symbol={ticker}&exchange=XIST&interval=1day"
+                f"&apikey={TWELVE_KEY}&outputsize=500"
+            )
+            resp = requests.get(url, timeout=10).json()
+            if resp.get('status') == 'error' or 'values' not in resp:
+                return pd.DataFrame()
+            df = pd.DataFrame(resp['values'])
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            df = df.set_index('datetime').sort_index()
+            df = df.rename(columns={
+                'open': 'Open', 'high': 'High',
+                'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+            }).astype(float)
+            return df
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
+# ─────────────────────────────────────────────
+# RSI Diverjansı tespiti
+# BUG FIX: Orijinal kodda price (60 eleman) ile rsi (~47 eleman)
+#          ayrı dropna() uygulandığı için indeksler HİZALI DEĞİLDİ.
+#          Fiyat[p_peak] ile RSI[r_peak] farklı zaman noktalarını
+#          karşılaştırıyordu → Yanlış sinyal üretiyordu.
+#          Düzeltme: Her ikisini aynı DataFrame'de tutup birlikte
+#          dropna() yapıyoruz → Aynı uzunluk, hizalı indeksler.
+# ─────────────────────────────────────────────
+def detect_divergence(df, window=60):
+    if len(df) < window:
+        return None, None
+
+    recent = df.iloc[-window:].copy()
+
+    # RSI'yi aynı DataFrame'e ekle, sonra birlikte temizle
+    recent['RSI'] = ta.rsi(recent['Close'], length=14)
+    recent = recent.dropna(subset=['Close', 'RSI'])
+
+    if len(recent) < 20:
+        return None, None
+
+    # Artık price ve rsi aynı uzunlukta ve hizalı
+    price = recent['Close'].values
+    rsi   = recent['RSI'].values
+
+    p_peaks,   _ = find_peaks(price,  distance=5)
+    r_peaks,   _ = find_peaks(rsi,    distance=5)
+    p_troughs, _ = find_peaks(-price, distance=5)
+    r_troughs, _ = find_peaks(-rsi,   distance=5)
+
+    # Negatif diverjans: fiyat YH yapıyor, RSI düşüyor → Satış baskısı
+    if (len(p_peaks) >= 2 and len(r_peaks) >= 2
+            and price[p_peaks[-1]] > price[p_peaks[-2]]
+            and rsi[r_peaks[-1]]   < rsi[r_peaks[-2]]):
+        return "NEGATİF UYUMSUZLUK", "Satış baskısı!"
+
+    # Pozitif diverjans: fiyat YD yapıyor, RSI yükseliyor → Alım fırsatı
+    if (len(p_troughs) >= 2 and len(r_troughs) >= 2
+            and price[p_troughs[-1]] < price[p_troughs[-2]]
+            and rsi[r_troughs[-1]]   > rsi[r_troughs[-2]]):
+        return "POZİTİF UYUMSUZLUK", "Alım fırsatı!"
+
+    return None, None
+
+# ─────────────────────────────────────────────
+# En iyi EMA çifti seçimi (basit backtest)
+# BUG FIX: Orijinal kodda best_emas'a tuple kaydediliyor ama
+#          varsayılan değer list [9,21] idi → Tutarlılık için
+#          her yerde tuple kullanıyoruz.
+# ─────────────────────────────────────────────
+def find_best_ema_pair(ticker):
+    df = get_data(ticker)
+    if df.empty or len(df) < 100:
+        return (9, 21)
+
+    pairs = [(3, 5), (5, 8), (8, 13), (9, 21), (12, 26), (20, 50)]
+    best_profit, best_pair = -999.0, (9, 21)
+
+    for short, long in pairs:
+        tmp = df.copy()
+        tmp['ema_s'] = ta.ema(tmp['Close'], length=short)
+        tmp['ema_l'] = ta.ema(tmp['Close'], length=long)
+        tmp = tmp.dropna(subset=['ema_s', 'ema_l'])
+
+        profit  = 0.0
+        in_pos  = False
+        entry   = 0.0
+
+        for i in range(1, len(tmp)):
+            es_prev = tmp['ema_s'].iloc[i - 1]
+            el_prev = tmp['ema_l'].iloc[i - 1]
+            es_cur  = tmp['ema_s'].iloc[i]
+            el_cur  = tmp['ema_l'].iloc[i]
+
+            if not in_pos and es_cur > el_cur and es_prev <= el_prev:
+                in_pos = True
+                entry  = tmp['Close'].iloc[i]
+            elif in_pos and es_cur < el_cur and es_prev >= el_prev:
+                profit += (tmp['Close'].iloc[i] - entry) / entry * 100
+                in_pos  = False
+
+        if in_pos:
+            profit += (tmp['Close'].iloc[-1] - entry) / entry * 100
+
+        if profit > best_profit:
+            best_profit, best_pair = profit, (short, long)
+
+    return best_pair  # Her zaman tuple döner
+
+# ─────────────────────────────────────────────
+# 4096 karakter Telegram sınırını aşmamak için mesaj böl
+# ─────────────────────────────────────────────
+def send_long_message(chat_id, text):
+    if len(text) <= 4000:
+        bot.send_message(chat_id, text, parse_mode='Markdown')
+        return
+
+    parts   = []
+    current = ""
+    for block in text.split('\n\n'):
+        if len(current) + len(block) + 2 > 4000:
+            parts.append(current.strip())
+            current = block
+        else:
+            current += block + '\n\n'
+    if current:
+        parts.append(current.strip())
+
+    for part in parts:
+        bot.send_message(chat_id, part, parse_mode='Markdown')
+        time.sleep(0.5)
+
+# ─────────────────────────────────────────────
+# İzlemedeki tüm hisseleri tara
+# ─────────────────────────────────────────────
+def scan_all_stocks(chat_id):
+    chat_id = str(chat_id)
+    if chat_id not in watchlist or not watchlist[chat_id]:
+        return
+
+    messages = []
+    for ticker in watchlist[chat_id]:
+        try:
+            df = get_data(ticker, "1y", "1d")
+            if df.empty or len(df) < 20:
+                continue
+
+            df['RSI'] = ta.rsi(df['Close'], length=14)
+
+            # BUG FIX: Varsayılan değer artık tuple (list değil)
+            ema_pair = best_emas.get(ticker, (9, 21))
+            df['EMA_s'] = ta.ema(df['Close'], length=ema_pair[0])
+            df['EMA_l'] = ta.ema(df['Close'], length=ema_pair[1])
+
+            df = df.dropna(subset=['RSI', 'EMA_s', 'EMA_l'])
+            if len(df) < 2:
+                continue
+
+            cross_up   = (df['EMA_s'].iloc[-2] <= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] > df['EMA_l'].iloc[-1])
+            cross_down = (df['EMA_s'].iloc[-2] >= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] < df['EMA_l'].iloc[-1])
+
+            signal = ""
+            if cross_up:
+                signal = "🚀 AL - EMA CROSS UP"
+            elif cross_down:
+                signal = "🔻 SAT - EMA CROSS DOWN"
+
+            div_type, div_msg = detect_divergence(df)
+
+            if signal or div_type:
+                vol      = df['Close'].pct_change().std() * 100
+                karakter = "Yüksek Vol" if vol > 2 else "Düşük Vol"
+                rsi_val  = df['RSI'].iloc[-1]
+                msg = (
+                    f"📊 *{ticker}* ({karakter})\n"
+                    f"{signal}\n"
+                    f"RSI: {rsi_val:.1f}\n"
+                    f"{div_type or 'Normal'} {div_msg or ''}\n"
+                    f"Best EMA: {ema_pair[0]}-{ema_pair[1]}\n"
+                    f"📈 https://tr.tradingview.com/chart/?symbol=BIST:{ticker}"
+                )
+                messages.append(msg)
+        except Exception:
+            continue
+        time.sleep(0.3)
+
+    if messages:
+        send_long_message(chat_id, "\n\n".join(messages))
+    # Sinyal yoksa sessiz kal (spam önlemi)
+
+# ─────────────────────────────────────────────
+# Telegram komutları
+# ─────────────────────────────────────────────
+@bot.message_handler(commands=['start'])
+def start(message):
+    bot.reply_to(
+        message,
+        "🚀 *BIST Bot* – RSI Diverjans + EMA Kesişim\n\n"
+        "Render restart olursa hemen `/addall` yaz.\n\n"
+        "Komutlar:\n"
+        "/add HEKTS\n"
+        "/addall (550+)\n"
+        "/optimize HEKTS\n"
+        "/check\n"
+        "/watchlist",
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(commands=['add'])
+def add_stock(message):
+    try:
+        ticker  = message.text.split()[1].upper().replace('.IS', '')
+        chat_id = str(message.chat.id)
+        watchlist.setdefault(chat_id, [])
+        if ticker not in watchlist[chat_id]:
+            watchlist[chat_id].append(ticker)
+            bot.reply_to(message, f"✅ {ticker} eklendi!")
+        else:
+            bot.reply_to(message, f"ℹ️ {ticker} zaten listende.")
+    except (IndexError, Exception):
+        bot.reply_to(message, "❌ Kullanım: /add HEKTS")
+
+@bot.message_handler(commands=['remove'])
+def remove_stock(message):
+    try:
+        ticker  = message.text.split()[1].upper().replace('.IS', '')
+        chat_id = str(message.chat.id)
+        if ticker in watchlist.get(chat_id, []):
+            watchlist[chat_id].remove(ticker)
+            bot.reply_to(message, f"🗑️ {ticker} listeden çıkarıldı.")
+        else:
+            bot.reply_to(message, f"ℹ️ {ticker} listende yok.")
+    except (IndexError, Exception):
+        bot.reply_to(message, "❌ Kullanım: /remove HEKTS")
+
+@bot.message_handler(commands=['addall'])
+def add_all(message):
+    chat_id = str(message.chat.id)
+    bot.reply_to(message, "🔄 Tüm BIST hisseleri (550+) yükleniyor... ~10 sn")
+    tickers = get_all_bist_tickers()
+    if not tickers:
+        bot.reply_to(message, "❌ Ticker listesi alınamadı. TWELVE_DATA_KEY kontrol et.")
+        return
+    watchlist.setdefault(chat_id, [])
+    added = sum(1 for t in tickers if t not in watchlist[chat_id] and not watchlist[chat_id].append(t))
+    bot.reply_to(message, f"✅ {added} hisse eklendi! Toplam: {len(watchlist[chat_id])}")
+
+@bot.message_handler(commands=['optimize'])
+def optimize(message):
+    try:
+        ticker = message.text.split()[1].upper().replace('.IS', '')
+        bot.reply_to(message, f"🔍 {ticker} optimize ediliyor (20-30 sn)...")
+        pair = find_best_ema_pair(ticker)
+        best_emas[ticker] = pair   # Tuple olarak kaydedilir
+        bot.reply_to(message, f"✅ {ticker} Best EMA: {pair[0]}-{pair[1]}")
+    except (IndexError, Exception):
+        bot.reply_to(message, "❌ Kullanım: /optimize HEKTS")
+
+@bot.message_handler(commands=['check'])
+def manual_check(message):
+    bot.reply_to(message, "🔍 Hisseler taranıyor (birkaç dakika)...")
+    scan_all_stocks(str(message.chat.id))
+    bot.reply_to(message, "✅ Tarama tamamlandı!")
+
+@bot.message_handler(commands=['watchlist'])
+def show_list(message):
+    chat_id = str(message.chat.id)
+    lst = watchlist.get(chat_id, [])
+    if lst:
+        text = f"📋 *Listen* ({len(lst)} hisse):\n" + "\n".join(lst)
+        send_long_message(chat_id, text)
+    else:
+        bot.reply_to(message, "Boş → /addall yaz")
+
+# ─────────────────────────────────────────────
+# Otomatik tarama – Her gün 18:00 TR saatiyle
+# BUG FIX: Orijinal kodda minute<5 + sleep(86400) kombinasyonu
+#          5 dakika içinde birden fazla tarama tetikleyebilirdi.
+#          Düzeltme: scanned_date ile aynı gün tekrar tarama engellenir.
+# ─────────────────────────────────────────────
+def auto_scan():
+    tr_tz        = pytz.timezone('Europe/Istanbul')
+    scanned_date = None  # Son tarama tarihi
+
+    while True:
+        now = datetime.now(tr_tz)
+        today = now.date()
+
+        if now.hour == 18 and now.minute < 5 and scanned_date != today:
+            scanned_date = today
+            for chat_id in list(watchlist.keys()):
+                scan_all_stocks(chat_id)
+
+        time.sleep(60)  # Her dakika kontrol et
+
+# ─────────────────────────────────────────────
+# Başlat
+# ─────────────────────────────────────────────
+if __name__ == "__main__":
+    print("🤖 BIST Bot çalışıyor – RSI Diverjans + EMA Kesişim")
+    threading.Thread(target=auto_scan, daemon=True).start()
+    bot.infinity_polling()

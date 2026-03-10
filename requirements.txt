@@ -1,0 +1,9 @@
+pyTelegramBotAPI
+yfinance
+pandas
+pandas_ta
+scipy
+numpy
+python-dotenv
+requests
+pytz
