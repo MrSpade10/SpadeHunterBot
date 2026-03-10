@@ -546,20 +546,54 @@ def send_long_message(chat_id, text):
         bot.send_message(chat_id, part, parse_mode='Markdown')
         time.sleep(0.5)
 
-def scan_all_stocks(chat_id):
+def scan_all_stocks(chat_id, limit=None):
     chat_id = str(chat_id)
     tickers = wl_get(chat_id)
     if not tickers:
         bot.send_message(chat_id, "Liste bos! /addall yazin."); return
 
-    total   = len(tickers)
-    bot.send_message(chat_id, f"{total} hisse taranıyor (gunluk + haftalik analiz)...")
+    # Limit uygula
+    if limit and limit < len(tickers):
+        import random
+        tickers = random.sample(tickers, limit)
+        bot.send_message(chat_id, f"Not: {limit} rastgele hisse taranacak. Tum liste icin /check yazin.")
 
+    total = len(tickers)
+
+    # ── ADIM 1: Cache durumunu özetle, eksikleri indir ──
+    cached   = [t for t in tickers if _db_cached_today(t)]
+    missing  = [t for t in tickers if t not in [c for c in cached]]
+    to_fetch = missing
+
+    bot.send_message(chat_id,
+        f"🔍 *{total} hisse taranacak*\n"
+        f"💾 Cache: {len(cached)} hazır | 📡 İndirilecek: {len(to_fetch)}\n"
+        f"{'⏱ Tahmini: ~'+str(int(len(to_fetch)*TD_DELAY//60))+' dk' if to_fetch else '⚡ Anında basliyor!'}\n"
+        f"🚫 İptal: _iptal check_ yaz"
+    )
+
+    # Eksik hisseleri indir
+    fetched = 0
+    for i, ticker in enumerate(to_fetch):
+        if is_cancelled(chat_id, "check"):
+            bot.send_message(chat_id, "Indirme iptal edildi."); return
+        df_d, df_w = get_data(ticker)
+        if (isinstance(df_d, pd.DataFrame) and not df_d.empty) or            (isinstance(df_w, pd.DataFrame) and not df_w.empty):
+            fetched += 1
+        if (i+1) % 20 == 0:
+            bot.send_message(chat_id, f"📥 İndiriliyor: {i+1}/{len(to_fetch)} ({fetched} başarılı)")
+        time.sleep(TD_DELAY)
+
+    bot.send_message(chat_id, "✅ Veri hazır, analiz başlıyor...")
+
+    # ── ADIM 2: Analiz (hızlı, cache'den okur) ──
     messages = []; no_data = 0
 
     for ticker in tickers:
         if is_cancelled(chat_id, "check"):
-            bot.send_message(chat_id, f"Tarama iptal edildi. ({len(messages)} sinyal bulunmuştu)")
+            bot.send_message(chat_id, f"🚫 Tarama iptal edildi. ({len(messages)} sinyal bulunmuştu)")
+            if messages:
+                send_long_message(chat_id, "\n\n".join(messages))
             return
         try:
             df_d, df_w = get_data(ticker)
@@ -578,8 +612,6 @@ def scan_all_stocks(chat_id):
             # ── GÜNLÜK ──
             if has_daily:
                 d = df_d.copy()
-
-                # RSI – EMA'dan tamamen bagimsiz, direkt hesapla
                 rsi_series = calc_rsi(d["Close"], 14).dropna()
                 if len(rsi_series) > 0:
                     rsi_d = float(rsi_series.iloc[-1])
@@ -590,17 +622,15 @@ def scan_all_stocks(chat_id):
                     else:
                         rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
 
-                # EMA kesisim
                 ema_s = calc_ema(d["Close"], ep_d[0])
                 ema_l = calc_ema(d["Close"], ep_d[1])
-                ema_df = pd.DataFrame({"s": ema_s, "l": ema_l}).dropna()
-                if len(ema_df) >= 2:
-                    if ema_df["s"].iloc[-2] <= ema_df["l"].iloc[-2] and ema_df["s"].iloc[-1] > ema_df["l"].iloc[-1]:
-                        signals.append("📈 Gunluk AL - EMA kesisim")
-                    elif ema_df["s"].iloc[-2] >= ema_df["l"].iloc[-2] and ema_df["s"].iloc[-1] < ema_df["l"].iloc[-1]:
-                        signals.append("📉 Gunluk SAT - EMA kesisim")
+                ef = pd.DataFrame({"s": ema_s, "l": ema_l}).dropna()
+                if len(ef) >= 2:
+                    if ef["s"].iloc[-2] <= ef["l"].iloc[-2] and ef["s"].iloc[-1] > ef["l"].iloc[-1]:
+                        signals.append("🟢↑ Günlük AL - EMA Kesişim")
+                    elif ef["s"].iloc[-2] >= ef["l"].iloc[-2] and ef["s"].iloc[-1] < ef["l"].iloc[-1]:
+                        signals.append("🔴↓ Günlük SAT - EMA Kesişim")
 
-                # Diverjans
                 d["RSI"] = calc_rsi(d["Close"], 14)
                 dt, dm = detect_divergence(d)
                 if dt:
@@ -609,8 +639,6 @@ def scan_all_stocks(chat_id):
             # ── HAFTALIK ──
             if has_weekly:
                 w = df_w.copy()
-
-                # RSI – bağımsız
                 rsi_series_w = calc_rsi(w["Close"], 14).dropna()
                 if len(rsi_series_w) > 0:
                     rsi_w = float(rsi_series_w.iloc[-1])
@@ -624,44 +652,28 @@ def scan_all_stocks(chat_id):
                     else:
                         rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend}")
 
-                # EMA kesisim
-                ema_sw = calc_ema(w["Close"], ep_w[0])
-                ema_lw = calc_ema(w["Close"], ep_w[1])
-                ema_wdf = pd.DataFrame({"s": ema_sw, "l": ema_lw}).dropna()
-                if len(ema_wdf) >= 2:
-                    if ema_wdf["s"].iloc[-2] <= ema_wdf["l"].iloc[-2] and ema_wdf["s"].iloc[-1] > ema_wdf["l"].iloc[-1]:
-                        signals.append("🚀 Haftalik AL - EMA kesisim (GUCLU)")
-                    elif ema_wdf["s"].iloc[-2] >= ema_wdf["l"].iloc[-2] and ema_wdf["s"].iloc[-1] < ema_wdf["l"].iloc[-1]:
-                        signals.append("🔻 Haftalik SAT - EMA kesisim (GUCLU)")
+                ema_sw2 = calc_ema(w["Close"], ep_w[0])
+                ema_lw2 = calc_ema(w["Close"], ep_w[1])
+                wf = pd.DataFrame({"s": ema_sw2, "l": ema_lw2}).dropna()
+                if len(wf) >= 2:
+                    if wf["s"].iloc[-2] <= wf["l"].iloc[-2] and wf["s"].iloc[-1] > wf["l"].iloc[-1]:
+                        signals.append("🟢🟢↑↑ Haftalık AL - EMA Kesişim (GÜÇLÜ)")
+                    elif wf["s"].iloc[-2] >= wf["l"].iloc[-2] and wf["s"].iloc[-1] < wf["l"].iloc[-1]:
+                        signals.append("🔴🔴↓↓ Haftalık SAT - EMA Kesişim (GÜÇLÜ)")
 
-                # Haftalik diverjans
                 w["RSI"] = calc_rsi(w["Close"], 14)
                 dt_w, dm_w = detect_divergence(w, window=40)
                 if dt_w:
                     signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
 
-            # EMA/diverjans sinyali VEYA asiri RSI varsa goster
-            # Her iki durumda da RSI satiri eklenir
             rsi_extreme = any("ASIRI" in r for r in rsi_lines)
             if signals or rsi_extreme:
                 vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
-                msg_lines = [f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)"]
+                msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else '(Düşük Vol)'}"]
                 msg_lines += signals
-                # RSI satirlari her zaman ekle (bos kalmasin)
-                if rsi_lines:
-                    msg_lines += rsi_lines
-                else:
-                    # rsi_lines dolmadiysa burada hesapla
-                    if has_daily:
-                        rv = calc_rsi(df_d["Close"], 14).dropna()
-                        if len(rv) > 0:
-                            msg_lines.append(f"RSI-G: {rv.iloc[-1]:.1f}")
-                    if has_weekly:
-                        rv2 = calc_rsi(df_w["Close"], 14).dropna()
-                        if len(rv2) > 0:
-                            msg_lines.append(f"RSI-H: {rv2.iloc[-1]:.1f}")
-                msg_lines.append(f"EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
-                msg_lines.append(f"https://tr.tradingview.com/chart/?symbol=BIST:{ticker}")
+                msg_lines += rsi_lines
+                msg_lines.append(f"📐 EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
+                msg_lines.append(f"📈 [TradingView — {ticker}](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})")
                 messages.append("\n".join(msg_lines))
 
         except Exception as e:
@@ -671,224 +683,29 @@ def scan_all_stocks(chat_id):
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
     else:
-        bot.send_message(chat_id, f"Tarama bitti. {total} hisse ({no_data} veri yok). Sinyal yok.")
+        bot.send_message(chat_id, f"✅ Tarama bitti. {total} hisse tarandı ({no_data} veri yok).\n📭 Sinyal bulunamadı.")
 
 
-# ═══════════════════════════════════════════════
-# Komutlar
-# ═══════════════════════════════════════════════
-@bot.message_handler(func=lambda m: m.text and m.text.strip().lower().startswith("iptal"))
-def cancel_operation(message):
-    chat_id = str(message.chat.id)
-    parts   = message.text.strip().lower().split()
-    op      = parts[1] if len(parts) > 1 else ""
-
-    op_map = {
-        "optimize": "optimize",
-        "check":    "check",
-        "tarama":   "check",
-    }
-
-    if op in op_map:
-        key = op_map[op]
-        get_cancel_flag(chat_id, key).set()
-        bot.reply_to(message, f"'{op}' islemi iptal ediliyor...")
-    else:
-        ops = ", ".join(op_map.keys())
-        bot.reply_to(message, f"Iptal edilebilir islemler: {ops}\nOrnek: iptal optimize")
-
-@bot.message_handler(commands=['start'])
-def start(message):
-    bot.reply_to(message,
-        f"*BIST Bot*\n"
-        f"Depolama: {'PostgreSQL (kalici)' if DATABASE_URL else 'In-memory (restart ta sifirlanir)'}\n\n"
-        "/addall - Tum BIST hisselerini ekle\n"
-        "/add HEKTS - Tek hisse ekle\n"
-        "/remove HEKTS - Listeden cikar\n"
-        "/check - Manuel tarama\n"
-        "/optimize HEKTS - En iyi EMA bul\n"
-        "/watchlist - Listeyi goster\n"
-        "/credits - API kredi durumu\n"
-        "/debug - Sistem durumu",
-        parse_mode='Markdown'
-    )
-
-@bot.message_handler(commands=['credits'])
-def credits_status(message):
-    today_cache = pc_count_today() if DATABASE_URL else 0
-    av_key      = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
-    lines = [
-        f"Birincil kaynak: Yahoo Finance (dogrudan HTTP)",
-        f"Yedek kaynak: Alpha Vantage (ALPHA_VANTAGE_KEY: {'VAR' if av_key else 'YOK - sadece Yahoo kullanilir'})",
-        f"DB cache bugun: {today_cache} hisse",
-    ]
-    # Yahoo test
+def _db_cached_today(ticker):
+    """Bu hissenin bugün DB cache'de olup olmadığını kontrol eder."""
+    if not DATABASE_URL:
+        return False
+    conn = db_connect()
+    if not conn:
+        return False
     try:
-        r = fetch_yahoo_direct("THYAO")
-        lines.append(f"Yahoo Finance test: {'OK - ' + str(len(r)) + ' gun veri' if not r.empty else 'BASARISIZ'}")
-    except Exception as e:
-        lines.append(f"Yahoo Finance test: HATA - {e}")
-    bot.reply_to(message, "\n".join(lines))
-
-@bot.message_handler(commands=['debug'])
-def debug(message):
-    try:
-        wh_url = bot.get_webhook_info().url or 'KURULU DEGIL'
-    except Exception:
-        wh_url = 'ALINAMADI'
-    chat_id = str(message.chat.id)
-    db_ok   = bool(db_connect())
-    today_cache = pc_count_today() if DATABASE_URL else 0
-    lines = [
-        f"TOKEN: {'VAR' if TOKEN else 'YOK'}",
-        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}",
-        f"RENDER_URL: {RENDER_URL or 'YOK'}",
-        f"DATABASE_URL: {'VAR' if DATABASE_URL else 'YOK'}",
-        f"DB baglanti: {'OK' if db_ok else 'HATA'}",
-        f"Webhook: {wh_url}",
-        f"Watchlist: {len(wl_get(chat_id))} hisse",
-        f"DB price cache bugun: {today_cache} hisse",
-        f"Oturum API kullanimi: {_api_credits_used} istek",
-    ]
-    bot.reply_to(message, "\n".join(lines))
-
-@bot.message_handler(commands=['rawapi'])
-def raw_api(message):
-    try:
-        ticker = message.text.split()[1].upper().replace('.IS','')
-    except IndexError:
-        bot.reply_to(message, "Kullanim: /rawapi HEKTS"); return
-    bot.reply_to(message, f"{ticker} icin veri kaynaklari test ediliyor...")
-    # Yahoo test
-    try:
-        r = fetch_yahoo_direct(ticker)
-        bot.send_message(str(message.chat.id),
-            f"Yahoo Finance: {'OK - ' + str(len(r)) + ' gun veri' if not r.empty else 'BASARISIZ - veri yok'}")
-    except Exception as e:
-        bot.send_message(str(message.chat.id), f"Yahoo Finance: HATA - {e}")
-    # Alpha Vantage test
-    av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
-    if av_key:
-        try:
-            url  = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}.IS&outputsize=compact&apikey={av_key}"
-            resp = requests.get(url, timeout=20).json()
-            keys = list(resp.keys())
-            ts   = resp.get("Time Series (Daily)", {})
-            bot.send_message(str(message.chat.id),
-                f"Alpha Vantage ham cevap:\n"
-                f"Anahtarlar: {keys}\n"
-                f"Veri satiri: {len(ts)}\n"
-                f"Not: {resp.get('Note','')[:100]}\n"
-                f"Info: {resp.get('Information','')[:100]}"
+        today = datetime.now(pytz.timezone('Europe/Istanbul')).date()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM price_cache WHERE ticker IN (%s, %s) AND fetched_at=%s LIMIT 1",
+                (f"d:{ticker}", f"w:{ticker}", today)
             )
-        except Exception as e:
-            bot.send_message(str(message.chat.id), f"Alpha Vantage: HATA - {e}")
-    else:
-        bot.send_message(str(message.chat.id), "Alpha Vantage: ALPHA_VANTAGE_KEY tanimli degil")
-
-@bot.message_handler(commands=['debug'])
-def debug(message):
-    try:
-        wh_url = bot.get_webhook_info().url or 'KURULU DEGIL'
+            return cur.fetchone() is not None
     except Exception:
-        wh_url = 'ALINAMADI'
-    chat_id = str(message.chat.id)
-    db_ok   = bool(db_connect())
-    today_cache = pc_count_today() if DATABASE_URL else 0
-    lines = [
-        f"TOKEN: {'VAR' if TOKEN else 'YOK'}",
-        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}",
-        f"RENDER_URL: {RENDER_URL or 'YOK'}",
-        f"DATABASE_URL: {'VAR' if DATABASE_URL else 'YOK'}",
-        f"DB baglanti: {'OK' if db_ok else 'HATA'}",
-        f"Webhook: {wh_url}",
-        f"Watchlist: {len(wl_get(chat_id))} hisse",
-        f"DB price cache bugun: {today_cache} hisse",
-        f"Oturum API kullanimi: {_api_credits_used} istek",
-    ]
-    bot.reply_to(message, "\n".join(lines))
+        return False
+    finally:
+        conn.close()
 
-@bot.message_handler(commands=['rawapi'])
-def raw_api(message):
-    try:
-        ticker = message.text.split()[1].upper().replace('.IS','')
-    except IndexError:
-        bot.reply_to(message, "Kullanim: /rawapi HEKTS"); return
-
-    if not TWELVE_KEY:
-        bot.reply_to(message, "TWELVE_KEY tanimli degil."); return
-
-    bot.reply_to(message, f"{ticker} icin 5 format deneniyor...")
-
-    base = f"https://api.twelvedata.com/time_series?interval=1day&apikey={TWELVE_KEY}&outputsize=5"
-    urls = [
-        ("exchange=BIST",      f"{base}&symbol={ticker}&exchange=BIST"),
-        ("exchange=XIST",      f"{base}&symbol={ticker}&exchange=XIST"),
-        ("symbol=TICKER:BIST", f"{base}&symbol={ticker}%3ABIST"),
-        ("symbol=TICKER:XIST", f"{base}&symbol={ticker}%3AXIST"),
-        ("symbol=TICKER.IS",   f"{base}&symbol={ticker}.IS"),
-    ]
-    for name, url in urls:
-        try:
-            resp = requests.get(url, timeout=15).json()
-            if 'values' in resp:
-                bot.send_message(str(message.chat.id),
-                    f"OK [{name}]: {len(resp['values'])} satir\n"
-                    f"Meta: {resp.get('meta',{})}"
-                )
-            else:
-                bot.send_message(str(message.chat.id),
-                    f"FAIL [{name}]: {resp.get('message','?')[:120]}"
-                )
-        except Exception as e:
-            bot.send_message(str(message.chat.id), f"HATA [{name}]: {e}")
-        time.sleep(2)
-
-@bot.message_handler(commands=['add'])
-def add_stock(message):
-    try:
-        ticker  = message.text.split()[1].upper().replace('.IS','')
-        chat_id = str(message.chat.id)
-        tickers = wl_get(chat_id)
-        if ticker not in tickers:
-            tickers.append(ticker)
-            wl_set(chat_id, tickers)
-            bot.reply_to(message, f"{ticker} eklendi! (Toplam: {len(tickers)})")
-        else:
-            bot.reply_to(message, f"{ticker} zaten listende.")
-    except Exception:
-        bot.reply_to(message, "Kullanim: /add HEKTS")
-
-@bot.message_handler(commands=['remove'])
-def remove_stock(message):
-    try:
-        ticker  = message.text.split()[1].upper().replace('.IS','')
-        chat_id = str(message.chat.id)
-        tickers = wl_get(chat_id)
-        if ticker in tickers:
-            tickers.remove(ticker)
-            wl_set(chat_id, tickers)
-            bot.reply_to(message, f"{ticker} cikarildi. (Kalan: {len(tickers)})")
-        else:
-            bot.reply_to(message, f"{ticker} listende yok.")
-    except Exception:
-        bot.reply_to(message, "Kullanim: /remove HEKTS")
-
-@bot.message_handler(commands=['addall'])
-def add_all(message):
-    chat_id = str(message.chat.id)
-    bot.reply_to(message, "BIST hisseleri yukleniyor...")
-    all_t   = get_all_bist_tickers()
-    current = wl_get(chat_id)
-    new     = [t for t in all_t if t not in current]
-    current.extend(new)
-    wl_set(chat_id, current)
-    bot.reply_to(message,
-        f"{len(new)} hisse eklendi! Toplam: {len(current)}\n"
-        f"Kaynak: {'TwelveData' if TWELVE_KEY else 'yedek liste'}\n"
-        f"NOT: /check ilk calistiginda ~{len(current)//8} dakika surecek.\n"
-        f"Sonraki /check anlık biter (DB cache kullanir)."
-    )
 
 def _run_optimize(chat_id, ticker):
     reset_cancel_flag(chat_id, "optimize")
@@ -903,9 +720,9 @@ def _run_optimize(chat_id, ticker):
             ema_set(ticker, pairs)
             d = pairs["daily"]; w = pairs["weekly"]
             bot.send_message(chat_id,
-                f"{ticker} optimize tamamlandi:\n"
-                f"Gunluk EMA: {d[0]}-{d[1]}\n"
-                f"Haftalik EMA: {w[0]}-{w[1]}\n"
+                f"✅ *{ticker}* optimize tamamlandı:\n"
+                f"📅 Günlük EMA: {d[0]}-{d[1]}\n"
+                f"📆 Haftalık EMA: {w[0]}-{w[1]}\n"
                 f"{'DB ye kaydedildi.' if DATABASE_URL else 'In-memory kaydedildi.'}")
     except Exception as e:
         bot.send_message(chat_id, f"Hata: {e}")
@@ -916,8 +733,8 @@ def optimize(message):
         ticker  = message.text.split()[1].upper().replace('.IS','')
         chat_id = str(message.chat.id)
         bot.reply_to(message,
-            f"{ticker} optimize basliyor...\n"
-            f"Iptal icin: iptal optimize")
+            f"⚙️ *{ticker}* optimize başlıyor...\n"
+            f"🚫 İptal: _iptal optimize_ yaz")
         threading.Thread(target=_run_optimize, args=(chat_id, ticker), daemon=True).start()
     except IndexError:
         bot.reply_to(message, "Kullanim: /optimize HEKTS")
@@ -938,7 +755,7 @@ def check_single(message):
 
     # Günlük
     if isinstance(df_d, pd.DataFrame) and not df_d.empty:
-        lines.append(f"Gunluk veri: {len(df_d)} bar")
+        lines.append(f"📅 Günlük veri: {len(df_d)} bar")
         rsi_s = calc_rsi(df_d["Close"], 14).dropna()
         lines.append(f"RSI serisi uzunluk: {len(rsi_s)}")
         if len(rsi_s) > 0:
@@ -947,11 +764,11 @@ def check_single(message):
             lines.append("RSI-G: HESAPLANAMADI")
         lines.append(f"Close son: {df_d['Close'].iloc[-1]:.2f}")
     else:
-        lines.append("Gunluk veri: YOK")
+        lines.append("📅 Günlük veri: ❌ YOK")
 
     # Haftalık
     if isinstance(df_w, pd.DataFrame) and not df_w.empty:
-        lines.append(f"Haftalik veri: {len(df_w)} bar")
+        lines.append(f"📆 Haftalık veri: {len(df_w)} bar")
         rsi_sw = calc_rsi(df_w["Close"], 14).dropna()
         lines.append(f"RSI-H serisi uzunluk: {len(rsi_sw)}")
         if len(rsi_sw) > 0:
@@ -959,7 +776,7 @@ def check_single(message):
         else:
             lines.append("RSI-H: HESAPLANAMADI")
     else:
-        lines.append("Haftalik veri: YOK")
+        lines.append("📆 Haftalık veri: ❌ YOK")
 
     # EMA ayarları
     ep = ema_get(ticker)
@@ -972,18 +789,25 @@ def manual_check(message):
     chat_id = str(message.chat.id)
     if not wl_get(chat_id):
         bot.reply_to(message, "Liste bos! Once /addall yazin."); return
+    # Limit desteği: /check 50 → sadece 50 hisse
+    parts = message.text.strip().split()
+    limit = None
+    if len(parts) > 1:
+        try:
+            limit = int(parts[1])
+        except ValueError:
+            bot.reply_to(message, "Kullanim: /check veya /check 50"); return
     reset_cancel_flag(chat_id, "check")
-    bot.reply_to(message, "Tarama basliyor... Iptal icin: iptal check")
-    threading.Thread(target=scan_all_stocks, args=(chat_id,), daemon=True).start()
+    threading.Thread(target=scan_all_stocks, args=(chat_id, limit), daemon=True).start()
 
 @bot.message_handler(commands=['watchlist'])
 def show_list(message):
     chat_id = str(message.chat.id)
     lst = wl_get(chat_id)
     if lst:
-        send_long_message(chat_id, f"*Listen* ({len(lst)} hisse):\n" + "\n".join(lst))
+        send_long_message(chat_id, f"📋 *İzleme Listen* ({len(lst)} hisse):\n" + "\n".join(lst))
     else:
-        bot.reply_to(message, "Liste bos - /addall yazin")
+        bot.reply_to(message, "📭 Liste boş — /addall yaz")
 
 def auto_scan():
     tr_tz = pytz.timezone('Europe/Istanbul')
