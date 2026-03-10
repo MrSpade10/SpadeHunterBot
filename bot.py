@@ -558,14 +558,15 @@ def scan_all_stocks(chat_id):
                         signals.append("📈 Gunluk AL - EMA kesisim")
                     elif d["EMA_s"].iloc[-2] >= d["EMA_l"].iloc[-2] and d["EMA_s"].iloc[-1] < d["EMA_l"].iloc[-1]:
                         signals.append("📉 Gunluk SAT - EMA kesisim")
-                    # RSI seviyeleri
+                    # RSI - her zaman goster
                     rsi_d = d["RSI"].iloc[-1]
-                    if rsi_d >= 70:
-                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
-                    elif rsi_d <= 30:
-                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} 💡 ASIRI SATIM")
-                    else:
-                        rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
+                    if not pd.isna(rsi_d):
+                        if rsi_d >= 70:
+                            rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
+                        elif rsi_d <= 30:
+                            rsi_lines.append(f"RSI-G: {rsi_d:.1f} 💡 ASIRI SATIM")
+                        else:
+                            rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
                     # Diverjans
                     dt, dm = detect_divergence(d)
                     if dt:
@@ -584,21 +585,24 @@ def scan_all_stocks(chat_id):
                         signals.append("🚀 Haftalik AL - EMA kesisim (GUCLU)")
                     elif w["EMA_s"].iloc[-2] >= w["EMA_l"].iloc[-2] and w["EMA_s"].iloc[-1] < w["EMA_l"].iloc[-1]:
                         signals.append("🔻 Haftalik SAT - EMA kesisim (GUCLU)")
-                    # RSI seviyeleri
+                    # RSI - her zaman goster
                     rsi_w = w["RSI"].iloc[-1]
                     trend = "YUKARI" if w["EMA_s"].iloc[-1] > w["EMA_l"].iloc[-1] else "ASAGI"
-                    if rsi_w >= 70:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM")
-                    elif rsi_w <= 30:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM")
-                    else:
-                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ({trend})")
+                    if not pd.isna(rsi_w):
+                        if rsi_w >= 70:
+                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM | Trend:{trend}")
+                        elif rsi_w <= 30:
+                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM | Trend:{trend}")
+                        else:
+                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend}")
                     # Haftalik diverjans
                     dt_w, dm_w = detect_divergence(w, window=40)
                     if dt_w:
                         signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
 
-            if signals:
+            # RSI asiri seviyeleri de sinyal sayilir
+            rsi_extreme = any("ASIRI" in r for r in rsi_lines)
+            if signals or rsi_extreme:
                 vol = df_d["Close"].pct_change().std() * 100 if not df_d.empty else 0
                 msg_lines = [f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)"]
                 msg_lines += signals
@@ -693,9 +697,17 @@ def raw_api(message):
     av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
     if av_key:
         try:
-            r2 = fetch_alphavantage(ticker)
+            url  = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={ticker}.IS&outputsize=compact&apikey={av_key}"
+            resp = requests.get(url, timeout=20).json()
+            keys = list(resp.keys())
+            ts   = resp.get("Time Series (Daily)", {})
             bot.send_message(str(message.chat.id),
-                f"Alpha Vantage: {'OK - ' + str(len(r2)) + ' gun veri' if not r2.empty else 'BASARISIZ'}")
+                f"Alpha Vantage ham cevap:\n"
+                f"Anahtarlar: {keys}\n"
+                f"Veri satiri: {len(ts)}\n"
+                f"Not: {resp.get('Note','')[:100]}\n"
+                f"Info: {resp.get('Information','')[:100]}"
+            )
         except Exception as e:
             bot.send_message(str(message.chat.id), f"Alpha Vantage: HATA - {e}")
     else:
