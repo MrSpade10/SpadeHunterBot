@@ -536,74 +536,86 @@ def scan_all_stocks(chat_id):
         try:
             df_d, df_w = get_data(ticker)
 
-            if (not isinstance(df_d, pd.DataFrame) or df_d.empty or len(df_d) < 10) and                (not isinstance(df_w, pd.DataFrame) or df_w.empty or len(df_w) < 10):
+            has_daily  = isinstance(df_d, pd.DataFrame) and not df_d.empty and len(df_d) >= 15
+            has_weekly = isinstance(df_w, pd.DataFrame) and not df_w.empty and len(df_w) >= 10
+            if not has_daily and not has_weekly:
                 no_data += 1; continue
 
-            ep      = ema_get(ticker)
-            ep_d    = ep["daily"]    # (short, long)
-            ep_w    = ep["weekly"]   # (short, long)
-            signals = []
+            ep    = ema_get(ticker)
+            ep_d  = ep["daily"]
+            ep_w  = ep["weekly"]
+            signals   = []
             rsi_lines = []
 
-            # ── GÜNLÜK ANALİZ ──
-            if isinstance(df_d, pd.DataFrame) and len(df_d) >= 10:
+            # ── GÜNLÜK ──
+            if has_daily:
                 d = df_d.copy()
-                d["RSI"]   = calc_rsi(d["Close"], 14)
-                d["EMA_s"] = calc_ema(d["Close"], ep_d[0])
-                d["EMA_l"] = calc_ema(d["Close"], ep_d[1])
-                d = d.dropna(subset=["RSI","EMA_s","EMA_l"])
-                if len(d) >= 2:
-                    # EMA kesisim
-                    if d["EMA_s"].iloc[-2] <= d["EMA_l"].iloc[-2] and d["EMA_s"].iloc[-1] > d["EMA_l"].iloc[-1]:
+
+                # RSI – EMA'dan bağımsız hesapla, son geçerli değeri al
+                rsi_series = calc_rsi(d["Close"], 14).dropna()
+                if len(rsi_series) > 0:
+                    rsi_d = rsi_series.iloc[-1]
+                    if rsi_d >= 70:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
+                    elif rsi_d <= 30:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} 💡 ASIRI SATIM")
+                    else:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
+
+                # EMA kesisim
+                ema_s = calc_ema(d["Close"], ep_d[0])
+                ema_l = calc_ema(d["Close"], ep_d[1])
+                ema_df = pd.DataFrame({"s": ema_s, "l": ema_l}).dropna()
+                if len(ema_df) >= 2:
+                    if ema_df["s"].iloc[-2] <= ema_df["l"].iloc[-2] and ema_df["s"].iloc[-1] > ema_df["l"].iloc[-1]:
                         signals.append("📈 Gunluk AL - EMA kesisim")
-                    elif d["EMA_s"].iloc[-2] >= d["EMA_l"].iloc[-2] and d["EMA_s"].iloc[-1] < d["EMA_l"].iloc[-1]:
+                    elif ema_df["s"].iloc[-2] >= ema_df["l"].iloc[-2] and ema_df["s"].iloc[-1] < ema_df["l"].iloc[-1]:
                         signals.append("📉 Gunluk SAT - EMA kesisim")
-                    # RSI - her zaman goster
-                    rsi_d = d["RSI"].iloc[-1]
-                    if not pd.isna(rsi_d):
-                        if rsi_d >= 70:
-                            rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
-                        elif rsi_d <= 30:
-                            rsi_lines.append(f"RSI-G: {rsi_d:.1f} 💡 ASIRI SATIM")
-                        else:
-                            rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
-                    # Diverjans
-                    dt, dm = detect_divergence(d)
-                    if dt:
-                        signals.append(f"⚡ Gunluk {dt} - {dm}")
 
-            # ── HAFTALIK ANALİZ ──
-            if isinstance(df_w, pd.DataFrame) and len(df_w) >= 10:
+                # Diverjans
+                d["RSI"] = calc_rsi(d["Close"], 14)
+                dt, dm = detect_divergence(d)
+                if dt:
+                    signals.append(f"⚡ Gunluk {dt} - {dm}")
+
+            # ── HAFTALIK ──
+            if has_weekly:
                 w = df_w.copy()
-                w["RSI"]   = calc_rsi(w["Close"], 14)
-                w["EMA_s"] = calc_ema(w["Close"], ep_w[0])
-                w["EMA_l"] = calc_ema(w["Close"], ep_w[1])
-                w = w.dropna(subset=["RSI","EMA_s","EMA_l"])
-                if len(w) >= 2:
-                    # EMA kesisim
-                    if w["EMA_s"].iloc[-2] <= w["EMA_l"].iloc[-2] and w["EMA_s"].iloc[-1] > w["EMA_l"].iloc[-1]:
-                        signals.append("🚀 Haftalik AL - EMA kesisim (GUCLU)")
-                    elif w["EMA_s"].iloc[-2] >= w["EMA_l"].iloc[-2] and w["EMA_s"].iloc[-1] < w["EMA_l"].iloc[-1]:
-                        signals.append("🔻 Haftalik SAT - EMA kesisim (GUCLU)")
-                    # RSI - her zaman goster
-                    rsi_w = w["RSI"].iloc[-1]
-                    trend = "YUKARI" if w["EMA_s"].iloc[-1] > w["EMA_l"].iloc[-1] else "ASAGI"
-                    if not pd.isna(rsi_w):
-                        if rsi_w >= 70:
-                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM | Trend:{trend}")
-                        elif rsi_w <= 30:
-                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM | Trend:{trend}")
-                        else:
-                            rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend}")
-                    # Haftalik diverjans
-                    dt_w, dm_w = detect_divergence(w, window=40)
-                    if dt_w:
-                        signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
 
-            # RSI asiri seviyeleri de sinyal sayilir
+                # RSI – bağımsız
+                rsi_series_w = calc_rsi(w["Close"], 14).dropna()
+                if len(rsi_series_w) > 0:
+                    rsi_w = rsi_series_w.iloc[-1]
+                    ema_sw = calc_ema(w["Close"], ep_w[0])
+                    ema_lw = calc_ema(w["Close"], ep_w[1])
+                    trend  = "YUKARI" if ema_sw.iloc[-1] > ema_lw.iloc[-1] else "ASAGI"
+                    if rsi_w >= 70:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM | Trend:{trend}")
+                    elif rsi_w <= 30:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM | Trend:{trend}")
+                    else:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} | Trend:{trend}")
+
+                # EMA kesisim
+                ema_sw = calc_ema(w["Close"], ep_w[0])
+                ema_lw = calc_ema(w["Close"], ep_w[1])
+                ema_wdf = pd.DataFrame({"s": ema_sw, "l": ema_lw}).dropna()
+                if len(ema_wdf) >= 2:
+                    if ema_wdf["s"].iloc[-2] <= ema_wdf["l"].iloc[-2] and ema_wdf["s"].iloc[-1] > ema_wdf["l"].iloc[-1]:
+                        signals.append("🚀 Haftalik AL - EMA kesisim (GUCLU)")
+                    elif ema_wdf["s"].iloc[-2] >= ema_wdf["l"].iloc[-2] and ema_wdf["s"].iloc[-1] < ema_wdf["l"].iloc[-1]:
+                        signals.append("🔻 Haftalik SAT - EMA kesisim (GUCLU)")
+
+                # Haftalik diverjans
+                w["RSI"] = calc_rsi(w["Close"], 14)
+                dt_w, dm_w = detect_divergence(w, window=40)
+                if dt_w:
+                    signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
+
+            # Sinyal VEYA asiri RSI varsa goster
             rsi_extreme = any("ASIRI" in r for r in rsi_lines)
             if signals or rsi_extreme:
-                vol = df_d["Close"].pct_change().std() * 100 if not df_d.empty else 0
+                vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
                 msg_lines = [f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)"]
                 msg_lines += signals
                 msg_lines += rsi_lines
