@@ -5,7 +5,7 @@ from datetime import datetime
 import telebot
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
+import numpy as np
 from scipy.signal import find_peaks
 import requests
 from dotenv import load_dotenv
@@ -15,20 +15,17 @@ from flask import Flask
 load_dotenv()
 TOKEN      = os.getenv('TELEGRAM_TOKEN')
 TWELVE_KEY = os.getenv('TWELVE_DATA_KEY')
-# Render Dashboard → Environment → RENDER_URL = https://SERVIS-ADIN.onrender.com
 RENDER_URL = os.getenv('RENDER_URL', '')
-PORT       = int(os.getenv('PORT', 10000))  # Render otomatik atar
+PORT       = int(os.getenv('PORT', 10000))
 
 bot = telebot.TeleBot(TOKEN)
 app = Flask(__name__)
 
-# Memory (Render free tier restart olunca sıfırlanır)
 watchlist = {}
 best_emas = {}
 
 # ─────────────────────────────────────────────
-# Flask – Render "port dinleniyor mu?" kontrolü
-# Bu iki endpoint OLMADAN Render servisi hemen kapatır!
+# Flask endpoint'leri – Render port kontrolü
 # ─────────────────────────────────────────────
 @app.route('/')
 def home():
@@ -39,10 +36,7 @@ def health():
     return "OK", 200
 
 # ─────────────────────────────────────────────
-# Keep-alive: Free tier 15 dakika isteksiz kalırsa uyur.
-# Kendi URL'ine her 14 dakikada ping at → uyanık kal.
-# RENDER_URL env değişkenini ayarlamazsan çalışmaz ama
-# bot yine de açık kalır (sadece uyuyabilir).
+# Keep-alive – 14 dk'da bir kendi URL'ine ping
 # ─────────────────────────────────────────────
 def keep_alive():
     if not RENDER_URL:
@@ -52,10 +46,29 @@ def keep_alive():
             requests.get(f"{RENDER_URL}/health", timeout=10)
         except Exception:
             pass
-        time.sleep(14 * 60)  # 14 dakika
+        time.sleep(14 * 60)
 
 # ─────────────────────────────────────────────
-# Tüm BIST ticker listesini TwelveData'dan çek
+# Manuel RSI hesabı (pandas_ta gerektirmez)
+# ─────────────────────────────────────────────
+def calc_rsi(series, length=14):
+    delta = series.diff()
+    gain  = delta.clip(lower=0)
+    loss  = -delta.clip(upper=0)
+    avg_gain = gain.ewm(com=length - 1, min_periods=length).mean()
+    avg_loss = loss.ewm(com=length - 1, min_periods=length).mean()
+    rs  = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+# ─────────────────────────────────────────────
+# Manuel EMA hesabı (pandas_ta gerektirmez)
+# ─────────────────────────────────────────────
+def calc_ema(series, length):
+    return series.ewm(span=length, adjust=False).mean()
+
+# ─────────────────────────────────────────────
+# Tüm BIST tickerları çek
 # ─────────────────────────────────────────────
 def get_all_bist_tickers():
     if not TWELVE_KEY:
@@ -72,7 +85,6 @@ def get_all_bist_tickers():
 
 # ─────────────────────────────────────────────
 # Fiyat verisi – yfinance önce, TwelveData yedek
-# BUG FIX: Yeni yfinance MultiIndex kolon döner → düzleştir
 # ─────────────────────────────────────────────
 def get_data(ticker, period="2y", interval="1d"):
     try:
@@ -114,15 +126,14 @@ def get_data(ticker, period="2y", interval="1d"):
     return pd.DataFrame()
 
 # ─────────────────────────────────────────────
-# RSI Diverjansı – hizalı indeks ile
-# BUG FIX: price ve rsi aynı df'den dropna → boyut garantili eşit
+# RSI Diverjansı
 # ─────────────────────────────────────────────
 def detect_divergence(df, window=60):
     if len(df) < window:
         return None, None
 
     recent = df.iloc[-window:].copy()
-    recent['RSI'] = ta.rsi(recent['Close'], length=14)
+    recent['RSI'] = calc_rsi(recent['Close'], 14)
     recent = recent.dropna(subset=['Close', 'RSI'])
 
     if len(recent) < 20:
@@ -150,7 +161,6 @@ def detect_divergence(df, window=60):
 
 # ─────────────────────────────────────────────
 # En iyi EMA çifti backtest
-# BUG FIX: Her zaman tuple döner (list karışıklığı yok)
 # ─────────────────────────────────────────────
 def find_best_ema_pair(ticker):
     df = get_data(ticker)
@@ -162,8 +172,8 @@ def find_best_ema_pair(ticker):
 
     for short, long in pairs:
         tmp = df.copy()
-        tmp['ema_s'] = ta.ema(tmp['Close'], length=short)
-        tmp['ema_l'] = ta.ema(tmp['Close'], length=long)
+        tmp['ema_s'] = calc_ema(tmp['Close'], short)
+        tmp['ema_l'] = calc_ema(tmp['Close'], long)
         tmp = tmp.dropna(subset=['ema_s', 'ema_l'])
 
         profit = 0.0
@@ -192,7 +202,7 @@ def find_best_ema_pair(ticker):
     return best_pair
 
 # ─────────────────────────────────────────────
-# 4096 karakter Telegram limitini aş
+# Mesaj böl (4096 karakter Telegram limiti)
 # ─────────────────────────────────────────────
 def send_long_message(chat_id, text):
     if len(text) <= 4000:
@@ -229,10 +239,10 @@ def scan_all_stocks(chat_id):
             if df.empty or len(df) < 20:
                 continue
 
-            df['RSI']   = ta.rsi(df['Close'], length=14)
+            df['RSI']   = calc_rsi(df['Close'], 14)
             ema_pair    = best_emas.get(ticker, (9, 21))
-            df['EMA_s'] = ta.ema(df['Close'], length=ema_pair[0])
-            df['EMA_l'] = ta.ema(df['Close'], length=ema_pair[1])
+            df['EMA_s'] = calc_ema(df['Close'], ema_pair[0])
+            df['EMA_l'] = calc_ema(df['Close'], ema_pair[1])
             df = df.dropna(subset=['RSI', 'EMA_s', 'EMA_l'])
             if len(df) < 2:
                 continue
@@ -355,13 +365,11 @@ def show_list(message):
         bot.reply_to(message, "Boş → /addall yaz")
 
 # ─────────────────────────────────────────────
-# Otomatik günlük tarama – 18:00 TR saati
-# BUG FIX: scanned_date ile aynı gün çift tetikleme engellendi
+# Otomatik tarama – her gün 18:00 TR saati
 # ─────────────────────────────────────────────
 def auto_scan():
     tr_tz        = pytz.timezone('Europe/Istanbul')
     scanned_date = None
-
     while True:
         now   = datetime.now(tr_tz)
         today = now.date()
@@ -372,21 +380,14 @@ def auto_scan():
         time.sleep(60)
 
 # ─────────────────────────────────────────────
-# Başlat:
-#   1. Keep-alive thread  (Render uyku modunu önler)
-#   2. Auto-scan thread   (18:00 otomatik tarama)
-#   3. Telegram bot thread
-#   4. Flask HTTP sunucusu (Render bu olmazsa servisi öldürür)
+# Başlat
 # ─────────────────────────────────────────────
 if __name__ == "__main__":
     print(f"🤖 BIST Bot başlatılıyor – PORT={PORT}")
-
-    threading.Thread(target=keep_alive,  daemon=True).start()
-    threading.Thread(target=auto_scan,   daemon=True).start()
+    threading.Thread(target=keep_alive, daemon=True).start()
+    threading.Thread(target=auto_scan,  daemon=True).start()
     threading.Thread(
         target=lambda: bot.infinity_polling(none_stop=True),
         daemon=True
     ).start()
-
-    # Flask ana thread'de çalışır – Render'ın port kontrolünü geçer
     app.run(host='0.0.0.0', port=PORT)
