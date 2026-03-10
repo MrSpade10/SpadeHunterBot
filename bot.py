@@ -526,21 +526,43 @@ def start(message):
 
 @bot.message_handler(commands=['credits'])
 def credits_status(message):
-    """TwelveData günlük kredi kullanımını göster."""
+    """TwelveData kredi durumu + DB cache özeti."""
     if not TWELVE_KEY:
         bot.reply_to(message, "TWELVE_KEY tanimli degil."); return
     try:
+        # Free plan /api_usage cevap vermiyor,
+        # bunun yerine tek satır veri çekip header'daki
+        # X-RateLimit-* bilgilerini okuyoruz
         resp = requests.get(
-            f"https://api.twelvedata.com/api_usage?apikey={TWELVE_KEY}",
+            f"https://api.twelvedata.com/time_series?symbol=THYAO%3AXIST&interval=1day&outputsize=1&apikey={TWELVE_KEY}",
             timeout=10
-        ).json()
-        current = resp.get('current_usage', '?')
-        limit   = resp.get('plan_limit',    '?')
+        )
+        data         = resp.json()
+        # Bazı planlarda header'da gelir
+        used         = resp.headers.get('X-RateLimit-Used-Day',      None)
+        remaining    = resp.headers.get('X-RateLimit-Remaining-Day', None)
+        limit        = resp.headers.get('X-RateLimit-Limit-Day',     None)
+
+        # Header yoksa JSON'dan anlamaya çalış
+        if not used:
+            msg = data.get('message','')
+            if 'out of API credits' in msg or 'run out' in msg:
+                status_line = "KREDI DOLDU - yarin sifirlanir"
+            elif 'values' in data:
+                status_line = "API calisiyor (kredi mevcut)"
+            else:
+                status_line = f"Durum bilinmiyor: {data.get('message','?')}"
+        else:
+            status_line = f"Kullanilan: {used} / {limit}  |  Kalan: {remaining}"
+
+        today_cache = pc_count_today() if DATABASE_URL else 0
         bot.reply_to(message,
-            f"TwelveData API kredisi:\n"
-            f"Kullanilan: {current} / {limit}\n"
-            f"Kalan: {int(limit)-int(current) if str(limit).isdigit() and str(current).isdigit() else '?'}\n"
-            f"DB cache bugun: {pc_count_today()} hisse"
+            f"TwelveData durumu:\n"
+            f"{status_line}\n\n"
+            f"DB cache bugun: {today_cache} hisse\n"
+            f"Bu oturumda yapilan istek: {_api_credits_used}\n\n"
+            f"NOT: Free plan = 800 kredi/gun.\n"
+            f"DB cache dolu oldugunda sifir kredi harcar."
         )
     except Exception as e:
         bot.reply_to(message, f"Kredi bilgisi alinamadi: {e}")
