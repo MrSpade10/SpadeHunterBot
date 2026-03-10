@@ -314,65 +314,54 @@ def get_all_bist_tickers():
                 pass
     return BIST_FALLBACK
 
-def fetch_from_twelvedata(ticker, outputsize=365):
+def fetch_from_stooq(ticker, days=500):
     """
-    TwelveData'dan veri çeker.
-    Kredi bitti mesajı gelirse False döner (None değil – ayırt etmek için).
+    Stooq.com - ucretsiz, API key yok, BIST destekler (TICKER.IS)
+    Render datacenter IP bloklama yok.
     """
-    global _api_credits_used
-    if not TWELVE_KEY:
+    try:
+        from datetime import timedelta
+        from io import StringIO
+        end   = datetime.now()
+        start = end - timedelta(days=days)
+        url   = (
+            f"https://stooq.com/q/d/l/"
+            f"?s={ticker.lower()}.is"
+            f"&d1={start.strftime('%Y%m%d')}"
+            f"&d2={end.strftime('%Y%m%d')}"
+            f"&i=d"
+        )
+        resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
+        if resp.status_code != 200 or len(resp.text) < 50 or 'No data' in resp.text:
+            return pd.DataFrame()
+        df = pd.read_csv(StringIO(resp.text))
+        if df.empty or 'Date' not in df.columns:
+            return pd.DataFrame()
+        df['Date'] = pd.to_datetime(df['Date'])
+        df = df.set_index('Date').sort_index()
+        df.index.name = 'datetime'
+        for col in ['Open','High','Low','Close','Volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df.dropna(subset=['Close'])
+    except Exception as e:
+        print(f"Stooq hata {ticker}: {e}")
         return pd.DataFrame()
 
-    urls = [
-        f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=BIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
-        f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
-        f"https://api.twelvedata.com/time_series?symbol={ticker}%3ABIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
-        f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
-        f"https://api.twelvedata.com/time_series?symbol={ticker}.IS&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
-    ]
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=15).json()
-            _api_credits_used += 1
-            # Kredi bitti mi?
-            msg = resp.get('message','')
-            if 'out of API credits' in msg or 'run out' in msg:
-                return 'CREDIT_EXCEEDED'
-            if resp.get('status') == 'error' or 'values' not in resp:
-                continue
-            df = pd.DataFrame(resp['values'])
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            df = df.set_index('datetime').sort_index()
-            df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
-            for col in ['Open','High','Low','Close','Volume']:
-                if col in df.columns:
-                    df[col] = pd.to_numeric(df[col], errors='coerce')
-            df = df.dropna(subset=['Close'])
-            if len(df) > 5:
-                return df
-        except Exception:
-            continue
-        time.sleep(1)
-    return pd.DataFrame()
-
 def get_data(ticker):
-    # 1. DB cache
+    # 1. DB cache - bugun cekilmisse tekrar gitme
     if DATABASE_URL:
         cached = pc_load(ticker)
         if cached is not None and not cached.empty:
             return cached
-
-    # 2. TwelveData
-    result = fetch_from_twelvedata(ticker)
-    # String karşılaştırmasını isinstance ile yap (== DataFrame'de hata verir)
-    if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
-        return 'CREDIT_EXCEEDED'
+    # 2. Stooq (ucretsiz)
+    result = fetch_from_stooq(ticker)
     if isinstance(result, pd.DataFrame) and not result.empty:
         if DATABASE_URL:
             pc_save(ticker, result)
         return result
-
     return pd.DataFrame()
+
 
 # ═══════════════════════════════════════════════
 # Analiz
@@ -399,12 +388,7 @@ def detect_divergence(df, window=60):
 
 def find_best_ema_pair(ticker):
     result = get_data(ticker)
-    if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
-        return 'CREDIT_EXCEEDED'
-    # DataFrame truth value bug fix: isinstance + .empty ayrı ayrı kontrol
-    if not isinstance(result, pd.DataFrame):
-        return None
-    if result.empty or len(result) < 100:
+    if not isinstance(result, pd.DataFrame) or result.empty or len(result) < 100:
         return None
     df    = result
     pairs = [(3,5),(5,8),(8,13),(9,21),(12,26),(20,50)]
@@ -461,24 +445,12 @@ def scan_all_stocks(chat_id):
         f"API kredi kullanimi: her hisse = 1 kredi (gun limiti: 800)."
     )
 
-    messages=[]; no_data=0; credit_stop=False
+    messages=[]; no_data=0
 
-    for i, ticker in enumerate(tickers):
-        if credit_stop:
-            no_data += 1
-            continue
+    for ticker in tickers:
         try:
             result = get_data(ticker)
-            if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
-                credit_stop = True
-                bot.send_message(chat_id,
-                    f"GUNLUK API KREDI DOLDU ({i} hisse taranabildi).\n"
-                    f"Yarin devam edilecek. DB'deki {cached} hissenin verisi korunuyor.")
-                no_data += 1
-                continue
-            if not isinstance(result, pd.DataFrame):
-                no_data += 1; continue
-            if result.empty or len(result) < 20:
+            if not isinstance(result, pd.DataFrame) or result.empty or len(result) < 20:
                 no_data += 1; continue
 
             df = result.copy()
@@ -532,46 +504,26 @@ def start(message):
 
 @bot.message_handler(commands=['credits'])
 def credits_status(message):
-    """TwelveData kredi durumu + DB cache özeti."""
-    if not TWELVE_KEY:
-        bot.reply_to(message, "TWELVE_KEY tanimli degil."); return
+    """Stooq test + DB cache durumu."""
+    from io import StringIO
+    from datetime import timedelta
+    today_cache = pc_count_today() if DATABASE_URL else 0
+    # Stooq canlı test
     try:
-        # Free plan /api_usage cevap vermiyor,
-        # bunun yerine tek satır veri çekip header'daki
-        # X-RateLimit-* bilgilerini okuyoruz
-        resp = requests.get(
-            f"https://api.twelvedata.com/time_series?symbol=THYAO&exchange=XIST&interval=1day&outputsize=1&apikey={TWELVE_KEY}",
-            timeout=10
-        )
-        data         = resp.json()
-        # Bazı planlarda header'da gelir
-        used         = resp.headers.get('X-RateLimit-Used-Day',      None)
-        remaining    = resp.headers.get('X-RateLimit-Remaining-Day', None)
-        limit        = resp.headers.get('X-RateLimit-Limit-Day',     None)
-
-        # Header yoksa JSON'dan anlamaya çalış
-        if not used:
-            msg = data.get('message','')
-            if 'out of API credits' in msg or 'run out' in msg:
-                status_line = "KREDI DOLDU - yarin sifirlanir"
-            elif 'values' in data:
-                status_line = "API calisiyor (kredi mevcut)"
-            else:
-                status_line = f"Durum bilinmiyor: {data.get('message','?')}"
-        else:
-            status_line = f"Kullanilan: {used} / {limit}  |  Kalan: {remaining}"
-
-        today_cache = pc_count_today() if DATABASE_URL else 0
-        bot.reply_to(message,
-            f"TwelveData durumu:\n"
-            f"{status_line}\n\n"
-            f"DB cache bugun: {today_cache} hisse\n"
-            f"Bu oturumda yapilan istek: {_api_credits_used}\n\n"
-            f"NOT: Free plan = 800 kredi/gun.\n"
-            f"DB cache dolu oldugunda sifir kredi harcar."
-        )
+        end   = datetime.now()
+        start = end - timedelta(days=10)
+        url   = f"https://stooq.com/q/d/l/?s=thyao.is&d1={start.strftime('%Y%m%d')}&d2={end.strftime('%Y%m%d')}&i=d"
+        resp  = requests.get(url, timeout=10, headers={'User-Agent':'Mozilla/5.0'})
+        df    = pd.read_csv(StringIO(resp.text)) if resp.status_code==200 else pd.DataFrame()
+        stooq_status = f"OK - {len(df)} satir THYAO verisi" if not df.empty and 'Date' in df.columns else "HATA - veri gelmedi"
     except Exception as e:
-        bot.reply_to(message, f"Kredi bilgisi alinamadi: {e}")
+        stooq_status = f"HATA - {e}"
+    bot.reply_to(message,
+        f"Veri kaynagi: Stooq (ucretsiz, API key yok)\n"
+        f"Stooq durumu: {stooq_status}\n\n"
+        f"DB cache bugun: {today_cache} hisse\n"
+        f"TwelveData: artik kullanilmiyor (free plan BIST desteklemiyor)"
+    )
 
 @bot.message_handler(commands=['debug'])
 def debug(message):
@@ -683,9 +635,7 @@ def optimize(message):
         ticker = message.text.split()[1].upper().replace('.IS','')
         bot.reply_to(message, f"{ticker} icin veri aliniyor (once DB cache kontrol ediliyor)...")
         pair = find_best_ema_pair(ticker)
-        if isinstance(pair, str) and pair == 'CREDIT_EXCEEDED':
-            bot.reply_to(message, "Gunluk API kredisi doldu. Yarin tekrar dene veya /credits yaz.")
-        elif pair is None:
+        if pair is None:
             bot.reply_to(message, f"{ticker}: Veri alinamadi veya yetersiz (<100 gun).")
         else:
             ema_set(ticker, pair)
