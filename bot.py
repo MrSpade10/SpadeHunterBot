@@ -400,7 +400,10 @@ def find_best_ema_pair(ticker):
     result = get_data(ticker)
     if result == 'CREDIT_EXCEEDED':
         return 'CREDIT_EXCEEDED'
-    if not isinstance(result, pd.DataFrame) or result.empty or len(result) < 100:
+    # DataFrame truth value bug fix: isinstance + .empty ayrı ayrı kontrol
+    if not isinstance(result, pd.DataFrame):
+        return None
+    if result.empty or len(result) < 100:
         return None
     df    = result
     pairs = [(3,5),(5,8),(8,13),(9,21),(12,26),(20,50)]
@@ -472,7 +475,9 @@ def scan_all_stocks(chat_id):
                     f"Yarin devam edilecek. DB'deki {cached} hissenin verisi korunuyor.")
                 no_data += 1
                 continue
-            if not isinstance(result, pd.DataFrame) or result.empty or len(result)<20:
+            if not isinstance(result, pd.DataFrame):
+                no_data += 1; continue
+            if result.empty or len(result) < 20:
                 no_data += 1; continue
 
             df = result.copy()
@@ -534,7 +539,7 @@ def credits_status(message):
         # bunun yerine tek satır veri çekip header'daki
         # X-RateLimit-* bilgilerini okuyoruz
         resp = requests.get(
-            f"https://api.twelvedata.com/time_series?symbol=THYAO%3AXIST&interval=1day&outputsize=1&apikey={TWELVE_KEY}",
+            f"https://api.twelvedata.com/time_series?symbol=THYAO&exchange=XIST&interval=1day&outputsize=1&apikey={TWELVE_KEY}",
             timeout=10
         )
         data         = resp.json()
