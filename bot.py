@@ -232,14 +232,28 @@ def wl_all_ids():
         conn.close()
 
 def ema_get(ticker):
+    """{"daily":[s,l], "weekly":[s,l]} formatinda dondurur."""
     val = db_get(f"ema:{ticker}") if DATABASE_URL else _mem_emas.get(ticker)
-    return tuple(val) if val else (9, 21)
+    if isinstance(val, dict):
+        return {
+            "daily":  tuple(val.get("daily",  [9, 21])),
+            "weekly": tuple(val.get("weekly", [9, 21])),
+        }
+    # Eski format (tuple) - geriye donuk uyumluluk
+    if isinstance(val, (list, tuple)) and len(val) == 2:
+        return {"daily": tuple(val), "weekly": tuple(val)}
+    return {"daily": (9, 21), "weekly": (9, 21)}
 
-def ema_set(ticker, pair):
+def ema_set(ticker, pairs_dict):
+    """pairs_dict: {"daily":(s,l), "weekly":(s,l)}"""
+    payload = {
+        "daily":  list(pairs_dict.get("daily",  (9,21))),
+        "weekly": list(pairs_dict.get("weekly", (9,21))),
+    }
     if DATABASE_URL:
-        db_set(f"ema:{ticker}", list(pair))
+        db_set(f"ema:{ticker}", payload)
     else:
-        _mem_emas[ticker] = pair
+        _mem_emas[ticker] = payload
 
 # ═══════════════════════════════════════════════
 # Flask – Webhook
@@ -314,13 +328,14 @@ def get_all_bist_tickers():
                 pass
     return BIST_FALLBACK
 
-def fetch_yahoo_direct(ticker):
+def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
     """
-    Yahoo Finance v8 API - dogrudan HTTP, yfinance kutuphanesi yok.
-    Farkli User-Agent ve headers ile Render IP blogu asiliyor.
+    Yahoo Finance v8 API - dogrudan HTTP.
+    interval: 1d (gunluk), 1wk (haftalik)
+    range_:   2y, 5y
     """
     try:
-        url     = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}.IS?interval=1d&range=2y"
+        url     = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}.IS?interval={interval}&range={range_}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
             "Accept": "application/json,text/html,*/*",
@@ -357,17 +372,15 @@ def fetch_yahoo_direct(ticker):
         return pd.DataFrame()
 
 def fetch_alphavantage(ticker):
-    """
-    Alpha Vantage - ucretsiz 25 istek/gun, BIST destekliyor.
-    ALPHA_VANTAGE_KEY env degiskeni gerekli.
-    """
+    """Alpha Vantage - ucretsiz 25 istek/gun, BIST .IS formatini destekler."""
     av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
     if not av_key:
         return pd.DataFrame()
     try:
+        # TIME_SERIES_DAILY - adjusted artik premium, daily kullan
         url  = (
-            f"https://www.alphavantage.co/query?"
-            f"function=TIME_SERIES_DAILY_ADJUSTED"
+            f"https://www.alphavantage.co/query"
+            f"?function=TIME_SERIES_DAILY"
             f"&symbol={ticker}.IS"
             f"&outputsize=full"
             f"&apikey={av_key}"
@@ -375,96 +388,123 @@ def fetch_alphavantage(ticker):
         resp = requests.get(url, timeout=20).json()
         ts   = resp.get("Time Series (Daily)", {})
         if not ts:
+            print(f"AV bos {ticker}: {list(resp.keys())}")
             return pd.DataFrame()
         rows = []
         for date_str, vals in ts.items():
             rows.append({
                 "datetime": pd.to_datetime(date_str),
-                "Open":   float(vals.get("1. open",  0)),
-                "High":   float(vals.get("2. high",  0)),
-                "Low":    float(vals.get("3. low",   0)),
-                "Close":  float(vals.get("5. adjusted close", vals.get("4. close", 0))),
-                "Volume": float(vals.get("6. volume", 0)),
+                "Open":   float(vals.get("1. open",  0) or 0),
+                "High":   float(vals.get("2. high",  0) or 0),
+                "Low":    float(vals.get("3. low",   0) or 0),
+                "Close":  float(vals.get("4. close", 0) or 0),
+                "Volume": float(vals.get("5. volume",0) or 0),
             })
         df = pd.DataFrame(rows).set_index("datetime").sort_index()
+        df.index.name = "datetime"
         return df.dropna(subset=["Close"])
     except Exception as e:
         print(f"AlphaVantage hata {ticker}: {e}")
         return pd.DataFrame()
 
+def resample_weekly(df_daily):
+    """Gunluk veriyi haftaliga donustur."""
+    if df_daily.empty:
+        return pd.DataFrame()
+    df = df_daily.resample("W").agg({
+        "Open":   "first",
+        "High":   "max",
+        "Low":    "min",
+        "Close":  "last",
+        "Volume": "sum"
+    }).dropna(subset=["Close"])
+    df.index.name = "datetime"
+    return df
+
 
 def get_data(ticker):
-    # 1. DB cache - bugun cekilmisse API'ye gitme
+    """
+    Gunluk ve haftalik DataFrame dondurir: (df_daily, df_weekly)
+    1. DB cache kontrol
+    2. Yahoo Finance dogrudan
+    3. Alpha Vantage yedek
+    4. Haftalik yoksa gunlukten resample et
+    """
+    df_daily  = pd.DataFrame()
+    df_weekly = pd.DataFrame()
+
+    # DB cache
     if DATABASE_URL:
-        cached = pc_load(ticker)
-        if cached is not None and not cached.empty:
-            return cached
+        c = pc_load(f"d:{ticker}")
+        if c is not None and not c.empty:
+            df_daily = c
+        c = pc_load(f"w:{ticker}")
+        if c is not None and not c.empty:
+            df_weekly = c
 
-    # 2. Yahoo Finance dogrudan HTTP (Render'dan calisir)
-    result = fetch_yahoo_direct(ticker)
-    if isinstance(result, pd.DataFrame) and not result.empty:
-        if DATABASE_URL:
-            pc_save(ticker, result)
-        return result
+    # Gunluk eksikse cek
+    if df_daily.empty:
+        r = fetch_yahoo_direct(ticker, interval="1d", range_="2y")
+        if isinstance(r, pd.DataFrame) and not r.empty:
+            df_daily = r
+            if DATABASE_URL: pc_save(f"d:{ticker}", r)
 
-    # 3. Alpha Vantage (ALPHA_VANTAGE_KEY env degiskeni varsa)
-    result = fetch_alphavantage(ticker)
-    if isinstance(result, pd.DataFrame) and not result.empty:
-        if DATABASE_URL:
-            pc_save(ticker, result)
-        return result
+    if df_daily.empty:
+        r = fetch_alphavantage(ticker)
+        if isinstance(r, pd.DataFrame) and not r.empty:
+            df_daily = r
+            if DATABASE_URL: pc_save(f"d:{ticker}", r)
 
-    return pd.DataFrame()
+    # Haftalik: once Yahoo'dan direkt cek, yoksa gunlugu resample et
+    if df_weekly.empty:
+        r = fetch_yahoo_direct(ticker, interval="1wk", range_="5y")
+        if isinstance(r, pd.DataFrame) and not r.empty:
+            df_weekly = r
+            if DATABASE_URL: pc_save(f"w:{ticker}", r)
 
+    if df_weekly.empty and not df_daily.empty:
+        df_weekly = resample_weekly(df_daily)
 
-# ═══════════════════════════════════════════════
-# Analiz
-# ═══════════════════════════════════════════════
-def detect_divergence(df, window=60):
-    if len(df) < window:
-        return None, None
-    recent        = df.iloc[-window:].copy()
-    recent['RSI'] = calc_rsi(recent['Close'], 14)
-    recent        = recent.dropna(subset=['Close','RSI'])
-    if len(recent) < 20:
-        return None, None
-    price = recent['Close'].values
-    rsi   = recent['RSI'].values
-    pp,_  = find_peaks(price,  distance=5)
-    rp,_  = find_peaks(rsi,    distance=5)
-    pt,_  = find_peaks(-price, distance=5)
-    rt,_  = find_peaks(-rsi,   distance=5)
-    if len(pp)>=2 and len(rp)>=2 and price[pp[-1]]>price[pp[-2]] and rsi[rp[-1]]<rsi[rp[-2]]:
-        return "NEGATIF UYUMSUZLUK","Satis baskisi!"
-    if len(pt)>=2 and len(rt)>=2 and price[pt[-1]]<price[pt[-2]] and rsi[rt[-1]]>rsi[rt[-2]]:
-        return "POZITIF UYUMSUZLUK","Alim firsati!"
-    return None, None
+    return df_daily, df_weekly
+
 
 def find_best_ema_pair(ticker):
-    result = get_data(ticker)
-    if not isinstance(result, pd.DataFrame) or result.empty or len(result) < 100:
-        return None
-    df    = result
-    pairs = [(3,5),(5,8),(8,13),(9,21),(12,26),(20,50)]
-    best_profit, best_pair = -999.0, (9,21)
-    for short, long_ in pairs:
-        tmp = df.copy()
-        tmp['es'] = calc_ema(tmp['Close'], short)
-        tmp['el'] = calc_ema(tmp['Close'], long_)
-        tmp = tmp.dropna(subset=['es','el'])
-        profit=0.0; in_pos=False; entry=0.0
-        for i in range(1, len(tmp)):
-            ep=tmp['es'].iloc[i-1]; lp=tmp['el'].iloc[i-1]
-            ec=tmp['es'].iloc[i];   lc=tmp['el'].iloc[i]
-            if not in_pos and ec>lc and ep<=lp:
-                in_pos=True; entry=tmp['Close'].iloc[i]
-            elif in_pos and ec<lc and ep>=lp:
-                profit+=(tmp['Close'].iloc[i]-entry)/entry*100; in_pos=False
-        if in_pos:
-            profit+=(tmp['Close'].iloc[-1]-entry)/entry*100
-        if profit>best_profit:
-            best_profit,best_pair=profit,(short,long_)
-    return best_pair
+    """
+    Hem gunluk hem haftalik icin ayri ayri en iyi EMA cifti bulur.
+    Donen: {"daily": (s,l), "weekly": (s,l)}
+    """
+    df_daily, df_weekly = get_data(ticker)
+    pairs  = [(3,8),(5,13),(8,21),(9,21),(12,26),(20,50),(10,30)]
+    result = {}
+
+    for label, df in [("daily", df_daily), ("weekly", df_weekly)]:
+        min_bars = 50 if label == "weekly" else 100
+        if not isinstance(df, pd.DataFrame) or df.empty or len(df) < min_bars:
+            result[label] = (9, 21)
+            continue
+        best_profit, best_pair = -999.0, (9, 21)
+        for short, long_ in pairs:
+            tmp = df.copy()
+            tmp["es"] = calc_ema(tmp["Close"], short)
+            tmp["el"] = calc_ema(tmp["Close"], long_)
+            tmp = tmp.dropna(subset=["es","el"])
+            profit = 0.0; in_pos = False; entry = 0.0
+            for i in range(1, len(tmp)):
+                ep = tmp["es"].iloc[i-1]; lp = tmp["el"].iloc[i-1]
+                ec = tmp["es"].iloc[i];   lc = tmp["el"].iloc[i]
+                if not in_pos and ec > lc and ep <= lp:
+                    in_pos = True; entry = tmp["Close"].iloc[i]
+                elif in_pos and ec < lc and ep >= lp:
+                    profit += (tmp["Close"].iloc[i] - entry) / entry * 100
+                    in_pos = False
+            if in_pos:
+                profit += (tmp["Close"].iloc[-1] - entry) / entry * 100
+            if profit > best_profit:
+                best_profit, best_pair = profit, (short, long_)
+        result[label] = best_pair
+
+    return result  # {"daily": (s,l), "weekly": (s,l)}
+
 
 def send_long_message(chat_id, text):
     if len(text) <= 4000:
@@ -487,55 +527,95 @@ def scan_all_stocks(chat_id):
     if not tickers:
         bot.send_message(chat_id, "Liste bos! /addall yazin."); return
 
-    total    = len(tickers)
-    cached   = pc_count_today() if DATABASE_URL else 0
-    to_dl    = max(0, total - cached)
-    est_min  = int(to_dl * TD_DELAY // 60)
+    total   = len(tickers)
+    bot.send_message(chat_id, f"{total} hisse taranıyor (gunluk + haftalik analiz)...")
 
-    bot.send_message(chat_id,
-        f"{total} hisse taranacak.\n"
-        f"DB cache: {cached} hisse hazir, {to_dl} API'den cekilecek.\n"
-        f"Tahmini bekleme: {'~'+str(est_min)+' dk' if to_dl>0 else 'hemen basliyor'}.\n"
-        f"API kredi kullanimi: her hisse = 1 kredi (gun limiti: 800)."
-    )
-
-    messages=[]; no_data=0
+    messages = []; no_data = 0
 
     for ticker in tickers:
         try:
-            result = get_data(ticker)
-            if not isinstance(result, pd.DataFrame) or result.empty or len(result) < 20:
+            df_d, df_w = get_data(ticker)
+
+            if (not isinstance(df_d, pd.DataFrame) or df_d.empty or len(df_d) < 10) and                (not isinstance(df_w, pd.DataFrame) or df_w.empty or len(df_w) < 10):
                 no_data += 1; continue
 
-            df = result.copy()
-            df['RSI']   = calc_rsi(df['Close'],14)
-            ep          = ema_get(ticker)
-            df['EMA_s'] = calc_ema(df['Close'],ep[0])
-            df['EMA_l'] = calc_ema(df['Close'],ep[1])
-            df          = df.dropna(subset=['RSI','EMA_s','EMA_l'])
-            if len(df)<2: continue
+            ep      = ema_get(ticker)
+            ep_d    = ep["daily"]    # (short, long)
+            ep_w    = ep["weekly"]   # (short, long)
+            signals = []
+            rsi_lines = []
 
-            cup = (df['EMA_s'].iloc[-2]<=df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1]>df['EMA_l'].iloc[-1])
-            cdn = (df['EMA_s'].iloc[-2]>=df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1]<df['EMA_l'].iloc[-1])
-            sig = "AL - EMA CROSS UP" if cup else ("SAT - EMA CROSS DOWN" if cdn else "")
-            dt,dm = detect_divergence(df)
-            if sig or dt:
-                vol = df['Close'].pct_change().std()*100
-                messages.append(
-                    f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)\n"
-                    f"{sig}\nRSI: {df['RSI'].iloc[-1]:.1f}\n"
-                    f"{dt or 'Normal'} {dm or ''}\n"
-                    f"EMA: {ep[0]}-{ep[1]}\n"
-                    f"https://tr.tradingview.com/chart/?symbol=BIST:{ticker}"
-                )
-            time.sleep(TD_DELAY)
-        except Exception:
+            # ── GÜNLÜK ANALİZ ──
+            if isinstance(df_d, pd.DataFrame) and len(df_d) >= 10:
+                d = df_d.copy()
+                d["RSI"]   = calc_rsi(d["Close"], 14)
+                d["EMA_s"] = calc_ema(d["Close"], ep_d[0])
+                d["EMA_l"] = calc_ema(d["Close"], ep_d[1])
+                d = d.dropna(subset=["RSI","EMA_s","EMA_l"])
+                if len(d) >= 2:
+                    # EMA kesisim
+                    if d["EMA_s"].iloc[-2] <= d["EMA_l"].iloc[-2] and d["EMA_s"].iloc[-1] > d["EMA_l"].iloc[-1]:
+                        signals.append("📈 Gunluk AL - EMA kesisim")
+                    elif d["EMA_s"].iloc[-2] >= d["EMA_l"].iloc[-2] and d["EMA_s"].iloc[-1] < d["EMA_l"].iloc[-1]:
+                        signals.append("📉 Gunluk SAT - EMA kesisim")
+                    # RSI seviyeleri
+                    rsi_d = d["RSI"].iloc[-1]
+                    if rsi_d >= 70:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} ⚠️ ASIRI ALIM")
+                    elif rsi_d <= 30:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f} 💡 ASIRI SATIM")
+                    else:
+                        rsi_lines.append(f"RSI-G: {rsi_d:.1f}")
+                    # Diverjans
+                    dt, dm = detect_divergence(d)
+                    if dt:
+                        signals.append(f"⚡ Gunluk {dt} - {dm}")
+
+            # ── HAFTALIK ANALİZ ──
+            if isinstance(df_w, pd.DataFrame) and len(df_w) >= 10:
+                w = df_w.copy()
+                w["RSI"]   = calc_rsi(w["Close"], 14)
+                w["EMA_s"] = calc_ema(w["Close"], ep_w[0])
+                w["EMA_l"] = calc_ema(w["Close"], ep_w[1])
+                w = w.dropna(subset=["RSI","EMA_s","EMA_l"])
+                if len(w) >= 2:
+                    # EMA kesisim
+                    if w["EMA_s"].iloc[-2] <= w["EMA_l"].iloc[-2] and w["EMA_s"].iloc[-1] > w["EMA_l"].iloc[-1]:
+                        signals.append("🚀 Haftalik AL - EMA kesisim (GUCLU)")
+                    elif w["EMA_s"].iloc[-2] >= w["EMA_l"].iloc[-2] and w["EMA_s"].iloc[-1] < w["EMA_l"].iloc[-1]:
+                        signals.append("🔻 Haftalik SAT - EMA kesisim (GUCLU)")
+                    # RSI seviyeleri
+                    rsi_w = w["RSI"].iloc[-1]
+                    trend = "YUKARI" if w["EMA_s"].iloc[-1] > w["EMA_l"].iloc[-1] else "ASAGI"
+                    if rsi_w >= 70:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ⚠️ ASIRI ALIM")
+                    elif rsi_w <= 30:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} 💡 ASIRI SATIM")
+                    else:
+                        rsi_lines.append(f"RSI-H: {rsi_w:.1f} ({trend})")
+                    # Haftalik diverjans
+                    dt_w, dm_w = detect_divergence(w, window=40)
+                    if dt_w:
+                        signals.append(f"⚡ Haftalik {dt_w} - {dm_w}")
+
+            if signals:
+                vol = df_d["Close"].pct_change().std() * 100 if not df_d.empty else 0
+                msg_lines = [f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)"]
+                msg_lines += signals
+                msg_lines += rsi_lines
+                msg_lines.append(f"EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
+                msg_lines.append(f"https://tr.tradingview.com/chart/?symbol=BIST:{ticker}")
+                messages.append("\n".join(msg_lines))
+
+        except Exception as e:
+            print(f"Scan hata {ticker}: {e}")
             continue
 
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
-    elif not credit_stop:
+    else:
         bot.send_message(chat_id, f"Tarama bitti. {total} hisse ({no_data} veri yok). Sinyal yok.")
+
 
 # ═══════════════════════════════════════════════
 # Komutlar
@@ -730,13 +810,16 @@ def optimize(message):
     try:
         ticker = message.text.split()[1].upper().replace('.IS','')
         bot.reply_to(message, f"{ticker} icin veri aliniyor (once DB cache kontrol ediliyor)...")
-        pair = find_best_ema_pair(ticker)
-        if pair is None:
-            bot.reply_to(message, f"{ticker}: Veri alinamadi veya yetersiz (<100 gun).")
+        pairs = find_best_ema_pair(ticker)
+        if not pairs or (pairs["daily"] == (9,21) and pairs["weekly"] == (9,21)):
+            bot.reply_to(message, f"{ticker}: Yeterli veri yok, varsayilan 9-21 kullanildi.")
         else:
-            ema_set(ticker, pair)
+            ema_set(ticker, pairs)
+            d = pairs["daily"]; w = pairs["weekly"]
             bot.reply_to(message,
-                f"{ticker} Best EMA: {pair[0]}-{pair[1]}\n"
+                f"{ticker} optimize edildi:\n"
+                f"Gunluk EMA: {d[0]}-{d[1]}\n"
+                f"Haftalik EMA: {w[0]}-{w[1]}\n"
                 f"{'DB ye kaydedildi.' if DATABASE_URL else 'In-memory kaydedildi.'}")
     except Exception as e:
         bot.reply_to(message, f"Hata: {e}")
