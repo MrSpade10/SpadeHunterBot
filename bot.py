@@ -3,7 +3,6 @@ import time
 import threading
 from datetime import datetime
 import telebot
-import yfinance as yf
 import pandas as pd
 import numpy as np
 from scipy.signal import find_peaks
@@ -23,6 +22,15 @@ app = Flask(__name__)
 
 watchlist = {}
 best_emas = {}
+_price_cache = {}       # { ticker: df }
+_cache_date  = None     # Son cache tarihi
+
+# ─────────────────────────────────────────────
+# TwelveData rate limit:
+#   Free plan → 8 istek/dakika, 800/gün
+#   Her istekten sonra 8 saniye bekle → güvenli
+# ─────────────────────────────────────────────
+TD_DELAY = 8.5   # saniye
 
 BIST_FALLBACK = [
     "THYAO","GARAN","ASELS","KCHOL","EREGL","AKBNK","YKBNK","SISE","TUPRS","SAHOL",
@@ -30,31 +38,31 @@ BIST_FALLBACK = [
     "ISCTR","ARCLK","PGSUS","TAVHL","TCELL","DOHOL","OYAKC","OTKAR","GUBRF","MGROS",
     "SOKM","ULKER","CCOLA","AGHOL","EKGYO","LOGO","NETAS","VESTL","TSKB","ALARK",
     "ALFAS","AEFES","KRDMD","GOLTS","SODA","KONYA","EGEEN","TKFEN","KERVT","HEKTS",
-    "GOODY","DURDO","ADEL","ADANA","AKMGY","ALCTL","ANACM","ANHYT","ANSGR","ASTOR",
-    "AYGAZ","BAGFS","BAKAB","BANVT","BARMA","BASCM","BERA","BFREN","BIOEN","BIZIM",
-    "BJKAS","BLCYT","BMSTL","BNTAS","BOSSA","BRISA","BRKSN","BRYAT","BSOKE","BTCIM",
-    "BUCIM","BURCE","BURVA","BVSAN","CATES","CEMTS","CIMSA","CLEBI","CRDFA","CRFSA",
-    "CUSAN","CVKMD","DAGHL","DARDL","DENGE","DERHL","DERIM","DESAS","DESPC","DEVA",
-    "DGATE","DITAS","DMSAS","DNISI","DOGUB","DORTS","DPENS","DYOBY","DZGYO","ECILC",
-    "ECZYT","EDIP","EGGUB","EGPRO","EGSER","EKIZ","EMKEL","EMNIS","ENDL","EPLAS",
-    "ERSU","ESCOM","ESEN","ETYAT","EUHOL","FADE","FENER","FONET","FORTE","GARFA",
-    "GEDIK","GEDZA","GENIL","GENTS","GEREL","GESAN","GIMAT","GLBMD","GLRYH","GLYHO",
-    "GMTAS","GNDUZ","GRSEL","GRTRK","GSDDE","GSDHO","GSRAY","GUBRF","GWIND","HEDEF",
-    "HZNDR","IDEAS","IDGYO","IEYHO","IHEVA","IHGZT","IHLAS","IHLGM","IHYAY","INDES",
-    "INFO","INGRM","INVEO","IPEKE","ISATR","ISBIR","ITTFK","IZFAS","IZMDC","JANTS",
-    "KAPLM","KAREL","KARSN","KARTN","KATMR","KBORU","KENT","KERVN","KLKIM","KLMSN",
-    "KONKA","KONTR","KOPOL","KORDS","KOZAA","KRDMA","KRDMB","KRONT","KRSAN","KSTUR",
-    "KUYAS","LIDER","LKMNH","LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR",
-    "MEPET","MERCN","MERKO","METRO","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK",
-    "MRDIN","MRSHL","MSGYO","MTRKS","NATEN","NBORU","NTGAZ","NTHOL","NUGYO","NUHCM",
-    "OBASE","ODAS","ORGE","ORMA","OSTIM","PAMEL","PAPIL","PARSN","PASEU","PENGD",
-    "PENTA","PETUN","PINSU","PKART","PLTUR","POLHO","POLTK","PRZMA","QNBFB","QNBFL",
-    "RAYSG","RHEAG","RNPOL","RUBNS","SAFKR","SAMAT","SANEL","SANFM","SANKO","SARKY",
-    "SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM","SILVR",
-    "SKBNK","SMART","SMILE","SNPAM","SONME","SUWEN","TARKM","TATEN","TATGD","TBORG",
-    "TEKTU","TGSAS","TIRE","TMSN","TRCAS","TRILC","TSPOR","TUCLK","TUREX","TURSG",
-    "TUYAP","ULUUN","USAK","VAKFN","VAKKO","VANGD","VBTYZ","VERUS","VKGYO","YAPRK",
-    "YATAS","YBTAS","YESIL","YUNSA","ZOREN"
+    "GOODY","DURDO","ADEL","ADANA","AKMGY","ANACM","ANHYT","ANSGR","ASTOR","AYGAZ",
+    "BAGFS","BAKAB","BANVT","BASCM","BERA","BFREN","BIOEN","BIZIM","BJKAS","BLCYT",
+    "BMSTL","BNTAS","BOSSA","BRISA","BRKSN","BRYAT","BSOKE","BTCIM","BUCIM","BURCE",
+    "BURVA","BVSAN","CATES","CEMTS","CIMSA","CLEBI","CRDFA","CRFSA","CUSAN","CVKMD",
+    "DAGHL","DARDL","DENGE","DERHL","DERIM","DESAS","DESPC","DEVA","DGATE","DITAS",
+    "DMSAS","DNISI","DOGUB","DORTS","DPENS","DYOBY","DZGYO","ECILC","ECZYT","EDIP",
+    "EGGUB","EGPRO","EGSER","EKIZ","EMKEL","EMNIS","ENDL","EPLAS","ERSU","ESCOM",
+    "ESEN","ETYAT","EUHOL","FADE","FENER","FONET","FORTE","GARFA","GEDIK","GEDZA",
+    "GENIL","GENTS","GEREL","GESAN","GIMAT","GLBMD","GLRYH","GLYHO","GMTAS","GNDUZ",
+    "GRSEL","GRTRK","GSDDE","GSDHO","GSRAY","GWIND","HEDEF","HZNDR","IDEAS","IDGYO",
+    "IEYHO","IHEVA","IHGZT","IHLAS","IHLGM","IHYAY","INDES","INFO","INGRM","INVEO",
+    "IPEKE","ISATR","ISBIR","ITTFK","IZFAS","IZMDC","JANTS","KAPLM","KAREL","KARSN",
+    "KARTN","KATMR","KBORU","KENT","KERVN","KLKIM","KLMSN","KONKA","KONTR","KOPOL",
+    "KORDS","KOZAA","KRDMA","KRDMB","KRONT","KRSAN","KSTUR","KUYAS","LIDER","LKMNH",
+    "LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR","MEPET","MERCN","MERKO",
+    "METRO","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK","MRDIN","MRSHL","MSGYO",
+    "MTRKS","NATEN","NBORU","NTGAZ","NTHOL","NUGYO","NUHCM","OBASE","ODAS","ORGE",
+    "ORMA","OSTIM","PAMEL","PAPIL","PARSN","PASEU","PENGD","PENTA","PETUN","PINSU",
+    "PKART","PLTUR","POLHO","POLTK","PRZMA","QNBFB","QNBFL","RAYSG","RHEAG","RNPOL",
+    "RUBNS","SAFKR","SAMAT","SANEL","SANFM","SANKO","SARKY","SAYAS","SDTTR","SEGYO",
+    "SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM","SILVR","SKBNK","SMART","SMILE",
+    "SNPAM","SONME","SUWEN","TARKM","TATEN","TATGD","TBORG","TEKTU","TGSAS","TIRE",
+    "TMSN","TRCAS","TRILC","TSPOR","TUCLK","TUREX","TURSG","TUYAP","ULUUN","USAK",
+    "VAKFN","VAKKO","VANGD","VBTYZ","VERUS","VKGYO","YAPRK","YATAS","YBTAS","YESIL",
+    "YUNSA","ZOREN"
 ]
 
 @app.route('/')
@@ -102,123 +110,82 @@ def get_all_bist_tickers():
     return BIST_FALLBACK
 
 # ─────────────────────────────────────────────
-# TOPLU veri çekme – yfinance rate limit sorununu çözer
-# Tek tek çekmek yerine tüm listeyi bir seferde indir,
-# sonra her ticker'ı DataFrame'den al
+# TwelveData'dan tek hisse verisi çek
 # ─────────────────────────────────────────────
-_bulk_cache = {}          # { ticker: df }
-_bulk_cache_date = None   # Son çekim tarihi
-
-def bulk_download(tickers, period="1y"):
-    """
-    Tüm BIST listesini tek bir yfinance.download() çağrısında indir.
-    Yahoo Finance tek tek sorgularda rate limit kesiyor,
-    toplu sorguda kesmez.
-    """
-    global _bulk_cache, _bulk_cache_date
-    today = datetime.now().date()
-    if _bulk_cache_date == today and _bulk_cache:
-        return  # Bugün zaten indirdik
-
-    symbols = [f"{t}.IS" for t in tickers]
+def fetch_from_twelvedata(ticker, outputsize=365):
+    if not TWELVE_KEY:
+        return pd.DataFrame()
     try:
-        raw = yf.download(
-            symbols,
-            period=period,
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            group_by="ticker",   # Her ticker ayrı kolon grubu
-            threads=True         # Paralel indirme
+        url  = (
+            f"https://api.twelvedata.com/time_series"
+            f"?symbol={ticker}&exchange=XIST&interval=1day"
+            f"&apikey={TWELVE_KEY}&outputsize={outputsize}"
         )
-        # raw.columns → MultiIndex: (field, ticker)
-        # Her ticker için Close serisini çıkar
-        new_cache = {}
-        for t in tickers:
-            sym = f"{t}.IS"
+        resp = requests.get(url, timeout=15).json()
+        if resp.get('status') == 'error' or 'values' not in resp:
+            return pd.DataFrame()
+        df = pd.DataFrame(resp['values'])
+        df['datetime'] = pd.to_datetime(df['datetime'])
+        df = df.set_index('datetime').sort_index()
+        df = df.rename(columns={
+            'open': 'Open', 'high': 'High',
+            'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+        })
+        for col in ['Open','High','Low','Close','Volume']:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+# ─────────────────────────────────────────────
+# Cache'den veri al (yoksa TwelveData'dan çek)
+# ─────────────────────────────────────────────
+def get_data(ticker):
+    if ticker in _price_cache:
+        return _price_cache[ticker].copy()
+    df = fetch_from_twelvedata(ticker)
+    if not df.empty:
+        _price_cache[ticker] = df
+    time.sleep(TD_DELAY)
+    return df
+
+# ─────────────────────────────────────────────
+# Tarama için batch veri çekme
+# Her hisseyi sırayla TwelveData'dan çekip cache'ler
+# ─────────────────────────────────────────────
+def bulk_fetch(tickers, chat_id, progress_msg_id=None):
+    global _cache_date
+    today = datetime.now().date()
+
+    # Bugün zaten cache'lenmiş olanları atla
+    to_fetch = [t for t in tickers if t not in _price_cache]
+
+    if not to_fetch:
+        return  # Hepsi zaten cache'de
+
+    total   = len(to_fetch)
+    fetched = 0
+
+    for i, ticker in enumerate(to_fetch):
+        df = fetch_from_twelvedata(ticker)
+        if not df.empty:
+            _price_cache[ticker] = df
+            fetched += 1
+
+        # Her 20 hissede bir ilerleme mesajı gönder
+        if (i + 1) % 20 == 0 or (i + 1) == total:
             try:
-                if isinstance(raw.columns, pd.MultiIndex):
-                    df = raw.xs(sym, axis=1, level=1)
-                else:
-                    df = raw  # Tek ticker durumu
-                df = df.dropna(how='all')
-                if len(df) > 10:
-                    new_cache[t] = df
+                bot.send_message(
+                    chat_id,
+                    f"Veri indiriliyor: {i+1}/{total} hisse ({fetched} basarili)"
+                )
             except Exception:
                 pass
-        _bulk_cache      = new_cache
-        _bulk_cache_date = today
-    except Exception:
-        pass
 
-def get_data_from_cache(ticker):
-    """Önce cache'e bak, yoksa TwelveData'ya git."""
-    if ticker in _bulk_cache:
-        return _bulk_cache[ticker].copy()
+        time.sleep(TD_DELAY)  # Rate limit: 8/dakika
 
-    # Cache miss → TwelveData yedek
-    if TWELVE_KEY:
-        try:
-            url = (
-                f"https://api.twelvedata.com/time_series"
-                f"?symbol={ticker}&exchange=XIST&interval=1day"
-                f"&apikey={TWELVE_KEY}&outputsize=500"
-            )
-            resp = requests.get(url, timeout=10).json()
-            if resp.get('status') != 'error' and 'values' in resp:
-                df = pd.DataFrame(resp['values'])
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df = df.set_index('datetime').sort_index()
-                df = df.rename(columns={
-                    'open': 'Open', 'high': 'High',
-                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
-                }).astype(float)
-                return df
-        except Exception:
-            pass
-
-    return pd.DataFrame()
-
-def get_data(ticker, period="2y", interval="1d"):
-    """Optimize + manuel /add için tekil veri çekme (retry ile)."""
-    for attempt in range(3):
-        try:
-            df = yf.download(
-                f"{ticker}.IS",
-                period=period,
-                interval=interval,
-                auto_adjust=True,
-                progress=False
-            )
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = df.columns.get_level_values(0)
-            if not df.empty and len(df) > 10:
-                return df
-        except Exception:
-            pass
-        time.sleep(2 * (attempt + 1))   # 2s, 4s, 6s backoff
-
-    if TWELVE_KEY:
-        try:
-            url = (
-                f"https://api.twelvedata.com/time_series"
-                f"?symbol={ticker}&exchange=XIST&interval=1day"
-                f"&apikey={TWELVE_KEY}&outputsize=500"
-            )
-            resp = requests.get(url, timeout=10).json()
-            if resp.get('status') != 'error' and 'values' in resp:
-                df = pd.DataFrame(resp['values'])
-                df['datetime'] = pd.to_datetime(df['datetime'])
-                df = df.set_index('datetime').sort_index()
-                df = df.rename(columns={
-                    'open': 'Open', 'high': 'High',
-                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
-                }).astype(float)
-                return df
-        except Exception:
-            pass
-
-    return pd.DataFrame()
+    _cache_date = today
 
 def detect_divergence(df, window=60):
     if len(df) < window:
@@ -245,30 +212,25 @@ def detect_divergence(df, window=60):
     return None, None
 
 def find_best_ema_pair(ticker):
-    df = get_data(ticker)
+    df = fetch_from_twelvedata(ticker, outputsize=500)
     if df.empty or len(df) < 100:
         return (9, 21)
-    pairs = [(3, 5), (5, 8), (8, 13), (9, 21), (12, 26), (20, 50)]
+    pairs = [(3,5),(5,8),(8,13),(9,21),(12,26),(20,50)]
     best_profit, best_pair = -999.0, (9, 21)
     for short, long in pairs:
         tmp          = df.copy()
         tmp['ema_s'] = calc_ema(tmp['Close'], short)
         tmp['ema_l'] = calc_ema(tmp['Close'], long)
-        tmp          = tmp.dropna(subset=['ema_s', 'ema_l'])
-        profit = 0.0
-        in_pos = False
-        entry  = 0.0
+        tmp          = tmp.dropna(subset=['ema_s','ema_l'])
+        profit = 0.0; in_pos = False; entry = 0.0
         for i in range(1, len(tmp)):
-            es_prev = tmp['ema_s'].iloc[i - 1]
-            el_prev = tmp['ema_l'].iloc[i - 1]
-            es_cur  = tmp['ema_s'].iloc[i]
-            el_cur  = tmp['ema_l'].iloc[i]
-            if not in_pos and es_cur > el_cur and es_prev <= el_prev:
-                in_pos = True
-                entry  = tmp['Close'].iloc[i]
-            elif in_pos and es_cur < el_cur and es_prev >= el_prev:
+            ep = tmp['ema_s'].iloc[i-1]; el = tmp['ema_l'].iloc[i-1]
+            ec = tmp['ema_s'].iloc[i];   lc = tmp['ema_l'].iloc[i]
+            if not in_pos and ec > lc and ep <= el:
+                in_pos = True; entry = tmp['Close'].iloc[i]
+            elif in_pos and ec < lc and ep >= el:
                 profit += (tmp['Close'].iloc[i] - entry) / entry * 100
-                in_pos  = False
+                in_pos = False
         if in_pos:
             profit += (tmp['Close'].iloc[-1] - entry) / entry * 100
         if profit > best_profit:
@@ -279,12 +241,10 @@ def send_long_message(chat_id, text):
     if len(text) <= 4000:
         bot.send_message(chat_id, text, parse_mode='Markdown')
         return
-    parts   = []
-    current = ""
+    parts = []; current = ""
     for block in text.split('\n\n'):
         if len(current) + len(block) + 2 > 4000:
-            parts.append(current.strip())
-            current = block
+            parts.append(current.strip()); current = block
         else:
             current += block + '\n\n'
     if current:
@@ -295,43 +255,44 @@ def send_long_message(chat_id, text):
 
 def scan_all_stocks(chat_id):
     chat_id = str(chat_id)
-    if chat_id not in watchlist or not watchlist[chat_id]:
+    if not watchlist.get(chat_id):
         return
 
     tickers = watchlist[chat_id]
     total   = len(tickers)
 
-    # ── ADIM 1: Toplu indirme (rate limit olmaz) ──
-    bot.send_message(chat_id, f"Veriler indiriliyor ({total} hisse)...")
-    bulk_download(tickers, period="1y")
+    bot.send_message(chat_id,
+        f"{total} hisse taranacak.\n"
+        f"Once veri indirilecek (rate limit: 8/dk).\n"
+        f"Tahmini sure: ~{total * TD_DELAY // 60:.0f} dakika.\n"
+        f"Cache varsa cok daha hizli biter."
+    )
 
-    # ── ADIM 2: Her hisseyi analiz et ──
-    messages = []
-    no_data  = 0
+    # 1. Adım: Veri çek (cache yoksa)
+    bulk_fetch(tickers, chat_id)
+
+    # 2. Adım: Analiz
+    messages = []; no_data = 0
 
     for ticker in tickers:
         try:
-            df = get_data_from_cache(ticker)
+            df = _price_cache.get(ticker, pd.DataFrame())
             if df.empty or len(df) < 20:
                 no_data += 1
                 continue
 
+            df = df.copy()
             df['RSI']   = calc_rsi(df['Close'], 14)
             ema_pair    = best_emas.get(ticker, (9, 21))
             df['EMA_s'] = calc_ema(df['Close'], ema_pair[0])
             df['EMA_l'] = calc_ema(df['Close'], ema_pair[1])
-            df          = df.dropna(subset=['RSI', 'EMA_s', 'EMA_l'])
+            df          = df.dropna(subset=['RSI','EMA_s','EMA_l'])
             if len(df) < 2:
                 continue
 
             cross_up   = (df['EMA_s'].iloc[-2] <= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] > df['EMA_l'].iloc[-1])
             cross_down = (df['EMA_s'].iloc[-2] >= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] < df['EMA_l'].iloc[-1])
-
-            signal = ""
-            if cross_up:
-                signal = "AL - EMA CROSS UP"
-            elif cross_down:
-                signal = "SAT - EMA CROSS DOWN"
+            signal = "AL - EMA CROSS UP" if cross_up else ("SAT - EMA CROSS DOWN" if cross_down else "")
 
             div_type, div_msg = detect_divergence(df)
 
@@ -353,23 +314,21 @@ def scan_all_stocks(chat_id):
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
     else:
-        bot.send_message(
-            chat_id,
-            f"Tarama bitti. {total} hisse, {no_data} veri yok.\nBugün sinyal yok."
-        )
+        bot.send_message(chat_id,
+            f"Tarama bitti. {total} hisse, {no_data} veri yok. Bugun sinyal yok.")
 
 # ─────────────────────────────────────────────
-# Telegram komutları
+# Komutlar
 # ─────────────────────────────────────────────
 @bot.message_handler(commands=['start'])
 def start(message):
-    bot.reply_to(
-        message,
+    bot.reply_to(message,
         "*BIST Bot* - RSI Diverjans + EMA Kesisim\n\n"
         "/addall - Tum BIST hisselerini ekle\n"
         "/add HEKTS - Tek hisse ekle\n"
         "/remove HEKTS - Listeden cikar\n"
         "/check - Manuel tarama\n"
+        "/clearcache - Veri onbellegini temizle\n"
         "/optimize HEKTS - En iyi EMA bul\n"
         "/watchlist - Listeyi goster\n"
         "/debug - Baglanti durumu",
@@ -378,14 +337,15 @@ def start(message):
 
 @bot.message_handler(commands=['debug'])
 def debug(message):
-    lines = []
-    lines.append(f"TOKEN: {'VAR' if TOKEN else 'YOK'}")
-    lines.append(f"TWELVE_DATA_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}")
-    lines.append(f"RENDER_URL: {RENDER_URL or 'YOK'}")
-    lines.append(f"PORT: {PORT}")
-    chat_id = str(message.chat.id)
-    lines.append(f"Watchlist: {len(watchlist.get(chat_id, []))} hisse")
-    lines.append(f"Bulk cache: {len(_bulk_cache)} hisse ({_bulk_cache_date or 'bos'})")
+    lines = [
+        f"TOKEN: {'VAR' if TOKEN else 'YOK'}",
+        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK - bot calisemaz!'}",
+        f"RENDER_URL: {RENDER_URL or 'YOK'}",
+        f"PORT: {PORT}",
+        f"Watchlist: {len(watchlist.get(str(message.chat.id), []))} hisse",
+        f"Cache: {len(_price_cache)} hisse ({_cache_date or 'bos'})",
+    ]
+    # TwelveData bağlantı testi
     if TWELVE_KEY:
         try:
             r = requests.get(
@@ -393,24 +353,24 @@ def debug(message):
                 timeout=10
             ).json()
             if r.get('status') == 'error':
-                lines.append(f"TwelveData: HATA - {r.get('message','?')}")
+                lines.append(f"TwelveData API: HATA - {r.get('message','?')}")
             else:
-                lines.append(f"TwelveData: OK - {len(r.get('data',[]))} hisse")
+                lines.append(f"TwelveData API: OK - {len(r.get('data',[]))} hisse listelendi")
         except Exception as e:
-            lines.append(f"TwelveData: HATA - {e}")
+            lines.append(f"TwelveData API: BAGLANTI HATASI - {e}")
+    # THYAO verisi testi
     try:
-        test = yf.download("THYAO.IS", period="5d", progress=False)
-        if isinstance(test.columns, pd.MultiIndex):
-            test.columns = test.columns.get_level_values(0)
-        lines.append(f"yfinance: {'OK - ' + str(len(test)) + ' gun' if not test.empty else 'VERI YOK'}")
+        df = fetch_from_twelvedata("THYAO", outputsize=5)
+        lines.append(f"THYAO veri testi: {'OK - ' + str(len(df)) + ' satir' if not df.empty else 'BASARISIZ'}")
     except Exception as e:
-        lines.append(f"yfinance: HATA - {e}")
+        lines.append(f"THYAO veri testi: HATA - {e}")
+
     bot.reply_to(message, "\n".join(lines))
 
 @bot.message_handler(commands=['add'])
 def add_stock(message):
     try:
-        ticker  = message.text.split()[1].upper().replace('.IS', '')
+        ticker  = message.text.split()[1].upper().replace('.IS','')
         chat_id = str(message.chat.id)
         watchlist.setdefault(chat_id, [])
         if ticker not in watchlist[chat_id]:
@@ -424,7 +384,7 @@ def add_stock(message):
 @bot.message_handler(commands=['remove'])
 def remove_stock(message):
     try:
-        ticker  = message.text.split()[1].upper().replace('.IS', '')
+        ticker  = message.text.split()[1].upper().replace('.IS','')
         chat_id = str(message.chat.id)
         if ticker in watchlist.get(chat_id, []):
             watchlist[chat_id].remove(ticker)
@@ -440,18 +400,20 @@ def add_all(message):
     bot.reply_to(message, "BIST hisseleri yukleniyor...")
     tickers = get_all_bist_tickers()
     watchlist.setdefault(chat_id, [])
-    added = sum(
-        1 for t in tickers
-        if t not in watchlist[chat_id] and not watchlist[chat_id].append(t)
-    )
+    added = sum(1 for t in tickers if t not in watchlist[chat_id] and not watchlist[chat_id].append(t))
     kaynak = "TwelveData" if TWELVE_KEY else "yedek liste"
     bot.reply_to(message, f"{added} hisse eklendi! Toplam: {len(watchlist[chat_id])}\nKaynak: {kaynak}")
+
+@bot.message_handler(commands=['clearcache'])
+def clear_cache(message):
+    _price_cache.clear()
+    bot.reply_to(message, "Cache temizlendi. Sonraki /check yeniden indirir.")
 
 @bot.message_handler(commands=['optimize'])
 def optimize(message):
     try:
-        ticker = message.text.split()[1].upper().replace('.IS', '')
-        bot.reply_to(message, f"{ticker} optimize ediliyor...")
+        ticker = message.text.split()[1].upper().replace('.IS','')
+        bot.reply_to(message, f"{ticker} icin veri cekiliyor (TwelveData)...")
         pair = find_best_ema_pair(ticker)
         best_emas[ticker] = pair
         bot.reply_to(message, f"{ticker} Best EMA: {pair[0]}-{pair[1]}")
@@ -461,30 +423,28 @@ def optimize(message):
 @bot.message_handler(commands=['check'])
 def manual_check(message):
     chat_id = str(message.chat.id)
-    lst     = watchlist.get(chat_id, [])
-    if not lst:
+    if not watchlist.get(chat_id):
         bot.reply_to(message, "Liste bos! Once /addall yazin.")
         return
-    bot.reply_to(message, f"{len(lst)} hisse icin tarama basliyor...")
     threading.Thread(target=scan_all_stocks, args=(chat_id,), daemon=True).start()
 
 @bot.message_handler(commands=['watchlist'])
 def show_list(message):
     chat_id = str(message.chat.id)
-    lst     = watchlist.get(chat_id, [])
+    lst = watchlist.get(chat_id, [])
     if lst:
         send_long_message(chat_id, f"*Listen* ({len(lst)} hisse):\n" + "\n".join(lst))
     else:
         bot.reply_to(message, "Liste bos - /addall yazin")
 
 def auto_scan():
-    tr_tz        = pytz.timezone('Europe/Istanbul')
+    tr_tz = pytz.timezone('Europe/Istanbul')
     scanned_date = None
     while True:
-        now   = datetime.now(tr_tz)
-        today = now.date()
-        if now.hour == 18 and now.minute < 5 and scanned_date != today:
-            scanned_date = today
+        now = datetime.now(tr_tz)
+        if now.hour == 18 and now.minute < 5 and scanned_date != now.date():
+            scanned_date = now.date()
+            _price_cache.clear()  # Günlük taramada cache sıfırla
             for chat_id in list(watchlist.keys()):
                 scan_all_stocks(chat_id)
         time.sleep(60)
