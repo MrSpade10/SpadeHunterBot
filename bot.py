@@ -314,52 +314,106 @@ def get_all_bist_tickers():
                 pass
     return BIST_FALLBACK
 
-def fetch_from_stooq(ticker, days=500):
+def fetch_yahoo_direct(ticker):
     """
-    Stooq.com - ucretsiz, API key yok, BIST destekler (TICKER.IS)
-    Render datacenter IP bloklama yok.
+    Yahoo Finance v8 API - dogrudan HTTP, yfinance kutuphanesi yok.
+    Farkli User-Agent ve headers ile Render IP blogu asiliyor.
     """
     try:
-        from datetime import timedelta
-        from io import StringIO
-        end   = datetime.now()
-        start = end - timedelta(days=days)
-        url   = (
-            f"https://stooq.com/q/d/l/"
-            f"?s={ticker.lower()}.is"
-            f"&d1={start.strftime('%Y%m%d')}"
-            f"&d2={end.strftime('%Y%m%d')}"
-            f"&i=d"
-        )
-        resp = requests.get(url, timeout=15, headers={'User-Agent': 'Mozilla/5.0'})
-        if resp.status_code != 200 or len(resp.text) < 50 or 'No data' in resp.text:
+        url     = f"https://query2.finance.yahoo.com/v8/finance/chart/{ticker}.IS?interval=1d&range=2y"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json,text/html,*/*",
+            "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+            "Referer": "https://finance.yahoo.com/",
+        }
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code != 200:
             return pd.DataFrame()
-        df = pd.read_csv(StringIO(resp.text))
-        if df.empty or 'Date' not in df.columns:
+        data   = resp.json()
+        result = data.get("chart", {}).get("result", [])
+        if not result:
             return pd.DataFrame()
-        df['Date'] = pd.to_datetime(df['Date'])
-        df = df.set_index('Date').sort_index()
-        df.index.name = 'datetime'
-        for col in ['Open','High','Low','Close','Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df.dropna(subset=['Close'])
+        r         = result[0]
+        timestamps = r.get("timestamp", [])
+        ohlcv      = r.get("indicators", {}).get("quote", [{}])[0]
+        if not timestamps:
+            return pd.DataFrame()
+        df = pd.DataFrame({
+            "datetime": pd.to_datetime(timestamps, unit="s"),
+            "Open":     ohlcv.get("open",   []),
+            "High":     ohlcv.get("high",   []),
+            "Low":      ohlcv.get("low",    []),
+            "Close":    ohlcv.get("close",  []),
+            "Volume":   ohlcv.get("volume", []),
+        })
+        df = df.set_index("datetime").sort_index()
+        df.index = df.index.tz_localize(None)
+        for col in ["Open","High","Low","Close","Volume"]:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        return df.dropna(subset=["Close"])
     except Exception as e:
-        print(f"Stooq hata {ticker}: {e}")
+        print(f"Yahoo direct hata {ticker}: {e}")
         return pd.DataFrame()
 
+def fetch_alphavantage(ticker):
+    """
+    Alpha Vantage - ucretsiz 25 istek/gun, BIST destekliyor.
+    ALPHA_VANTAGE_KEY env degiskeni gerekli.
+    """
+    av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
+    if not av_key:
+        return pd.DataFrame()
+    try:
+        url  = (
+            f"https://www.alphavantage.co/query?"
+            f"function=TIME_SERIES_DAILY_ADJUSTED"
+            f"&symbol={ticker}.IS"
+            f"&outputsize=full"
+            f"&apikey={av_key}"
+        )
+        resp = requests.get(url, timeout=20).json()
+        ts   = resp.get("Time Series (Daily)", {})
+        if not ts:
+            return pd.DataFrame()
+        rows = []
+        for date_str, vals in ts.items():
+            rows.append({
+                "datetime": pd.to_datetime(date_str),
+                "Open":   float(vals.get("1. open",  0)),
+                "High":   float(vals.get("2. high",  0)),
+                "Low":    float(vals.get("3. low",   0)),
+                "Close":  float(vals.get("5. adjusted close", vals.get("4. close", 0))),
+                "Volume": float(vals.get("6. volume", 0)),
+            })
+        df = pd.DataFrame(rows).set_index("datetime").sort_index()
+        return df.dropna(subset=["Close"])
+    except Exception as e:
+        print(f"AlphaVantage hata {ticker}: {e}")
+        return pd.DataFrame()
+
+
 def get_data(ticker):
-    # 1. DB cache - bugun cekilmisse tekrar gitme
+    # 1. DB cache - bugun cekilmisse API'ye gitme
     if DATABASE_URL:
         cached = pc_load(ticker)
         if cached is not None and not cached.empty:
             return cached
-    # 2. Stooq (ucretsiz)
-    result = fetch_from_stooq(ticker)
+
+    # 2. Yahoo Finance dogrudan HTTP (Render'dan calisir)
+    result = fetch_yahoo_direct(ticker)
     if isinstance(result, pd.DataFrame) and not result.empty:
         if DATABASE_URL:
             pc_save(ticker, result)
         return result
+
+    # 3. Alpha Vantage (ALPHA_VANTAGE_KEY env degiskeni varsa)
+    result = fetch_alphavantage(ticker)
+    if isinstance(result, pd.DataFrame) and not result.empty:
+        if DATABASE_URL:
+            pc_save(ticker, result)
+        return result
+
     return pd.DataFrame()
 
 
@@ -504,26 +558,68 @@ def start(message):
 
 @bot.message_handler(commands=['credits'])
 def credits_status(message):
-    """Stooq test + DB cache durumu."""
-    from io import StringIO
-    from datetime import timedelta
     today_cache = pc_count_today() if DATABASE_URL else 0
-    # Stooq canlı test
+    av_key      = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
+    lines = [
+        f"Birincil kaynak: Yahoo Finance (dogrudan HTTP)",
+        f"Yedek kaynak: Alpha Vantage (ALPHA_VANTAGE_KEY: {'VAR' if av_key else 'YOK - sadece Yahoo kullanilir'})",
+        f"DB cache bugun: {today_cache} hisse",
+    ]
+    # Yahoo test
     try:
-        end   = datetime.now()
-        start = end - timedelta(days=10)
-        url   = f"https://stooq.com/q/d/l/?s=thyao.is&d1={start.strftime('%Y%m%d')}&d2={end.strftime('%Y%m%d')}&i=d"
-        resp  = requests.get(url, timeout=10, headers={'User-Agent':'Mozilla/5.0'})
-        df    = pd.read_csv(StringIO(resp.text)) if resp.status_code==200 else pd.DataFrame()
-        stooq_status = f"OK - {len(df)} satir THYAO verisi" if not df.empty and 'Date' in df.columns else "HATA - veri gelmedi"
+        r = fetch_yahoo_direct("THYAO")
+        lines.append(f"Yahoo Finance test: {'OK - ' + str(len(r)) + ' gun veri' if not r.empty else 'BASARISIZ'}")
     except Exception as e:
-        stooq_status = f"HATA - {e}"
-    bot.reply_to(message,
-        f"Veri kaynagi: Stooq (ucretsiz, API key yok)\n"
-        f"Stooq durumu: {stooq_status}\n\n"
-        f"DB cache bugun: {today_cache} hisse\n"
-        f"TwelveData: artik kullanilmiyor (free plan BIST desteklemiyor)"
-    )
+        lines.append(f"Yahoo Finance test: HATA - {e}")
+    bot.reply_to(message, "\n".join(lines))
+
+@bot.message_handler(commands=['debug'])
+def debug(message):
+    try:
+        wh_url = bot.get_webhook_info().url or 'KURULU DEGIL'
+    except Exception:
+        wh_url = 'ALINAMADI'
+    chat_id = str(message.chat.id)
+    db_ok   = bool(db_connect())
+    today_cache = pc_count_today() if DATABASE_URL else 0
+    lines = [
+        f"TOKEN: {'VAR' if TOKEN else 'YOK'}",
+        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}",
+        f"RENDER_URL: {RENDER_URL or 'YOK'}",
+        f"DATABASE_URL: {'VAR' if DATABASE_URL else 'YOK'}",
+        f"DB baglanti: {'OK' if db_ok else 'HATA'}",
+        f"Webhook: {wh_url}",
+        f"Watchlist: {len(wl_get(chat_id))} hisse",
+        f"DB price cache bugun: {today_cache} hisse",
+        f"Oturum API kullanimi: {_api_credits_used} istek",
+    ]
+    bot.reply_to(message, "\n".join(lines))
+
+@bot.message_handler(commands=['rawapi'])
+def raw_api(message):
+    try:
+        ticker = message.text.split()[1].upper().replace('.IS','')
+    except IndexError:
+        bot.reply_to(message, "Kullanim: /rawapi HEKTS"); return
+    bot.reply_to(message, f"{ticker} icin veri kaynaklari test ediliyor...")
+    # Yahoo test
+    try:
+        r = fetch_yahoo_direct(ticker)
+        bot.send_message(str(message.chat.id),
+            f"Yahoo Finance: {'OK - ' + str(len(r)) + ' gun veri' if not r.empty else 'BASARISIZ - veri yok'}")
+    except Exception as e:
+        bot.send_message(str(message.chat.id), f"Yahoo Finance: HATA - {e}")
+    # Alpha Vantage test
+    av_key = (os.getenv("ALPHA_VANTAGE_KEY") or "").strip()
+    if av_key:
+        try:
+            r2 = fetch_alphavantage(ticker)
+            bot.send_message(str(message.chat.id),
+                f"Alpha Vantage: {'OK - ' + str(len(r2)) + ' gun veri' if not r2.empty else 'BASARISIZ'}")
+        except Exception as e:
+            bot.send_message(str(message.chat.id), f"Alpha Vantage: HATA - {e}")
+    else:
+        bot.send_message(str(message.chat.id), "Alpha Vantage: ALPHA_VANTAGE_KEY tanimli degil")
 
 @bot.message_handler(commands=['debug'])
 def debug(message):
