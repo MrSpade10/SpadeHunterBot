@@ -352,10 +352,6 @@ def fetch_from_twelvedata(ticker, outputsize=365):
     return pd.DataFrame()
 
 def get_data(ticker):
-    """
-    Önce DB cache'e bak (bugün çekilmişse API'ye gitme).
-    Yoksa TwelveData'dan çek ve DB'ye kaydet.
-    """
     # 1. DB cache
     if DATABASE_URL:
         cached = pc_load(ticker)
@@ -364,7 +360,8 @@ def get_data(ticker):
 
     # 2. TwelveData
     result = fetch_from_twelvedata(ticker)
-    if result == 'CREDIT_EXCEEDED':
+    # String karşılaştırmasını isinstance ile yap (== DataFrame'de hata verir)
+    if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
         return 'CREDIT_EXCEEDED'
     if isinstance(result, pd.DataFrame) and not result.empty:
         if DATABASE_URL:
@@ -398,7 +395,7 @@ def detect_divergence(df, window=60):
 
 def find_best_ema_pair(ticker):
     result = get_data(ticker)
-    if result == 'CREDIT_EXCEEDED':
+    if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
         return 'CREDIT_EXCEEDED'
     # DataFrame truth value bug fix: isinstance + .empty ayrı ayrı kontrol
     if not isinstance(result, pd.DataFrame):
@@ -468,7 +465,7 @@ def scan_all_stocks(chat_id):
             continue
         try:
             result = get_data(ticker)
-            if result == 'CREDIT_EXCEEDED':
+            if isinstance(result, str) and result == 'CREDIT_EXCEEDED':
                 credit_stop = True
                 bot.send_message(chat_id,
                     f"GUNLUK API KREDI DOLDU ({i} hisse taranabildi).\n"
@@ -646,7 +643,7 @@ def optimize(message):
         ticker = message.text.split()[1].upper().replace('.IS','')
         bot.reply_to(message, f"{ticker} icin veri aliniyor (once DB cache kontrol ediliyor)...")
         pair = find_best_ema_pair(ticker)
-        if pair == 'CREDIT_EXCEEDED':
+        if isinstance(pair, str) and pair == 'CREDIT_EXCEEDED':
             bot.reply_to(message, "Gunluk API kredisi doldu. Yarin tekrar dene veya /credits yaz.")
         elif pair is None:
             bot.reply_to(message, f"{ticker}: Veri alinamadi veya yetersiz (<100 gun).")
