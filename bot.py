@@ -46,15 +46,15 @@ BIST_FALLBACK = [
     "KONKA","KONTR","KOPOL","KORDS","KOZAA","KRDMA","KRDMB","KRONT","KRSAN","KSTUR",
     "KUYAS","LIDER","LKMNH","LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR",
     "MEPET","MERCN","MERKO","METRO","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK",
-    "MRDIN","MRSHL","MSGYO","MTRKS","NATEN","NBORU","NETAS","NTGAZ","NTHOL","NUGYO",
-    "NUHCM","OBASE","ODAS","ORGE","ORMA","OSTIM","PAMEL","PAPIL","PARSN","PASEU",
-    "PENGD","PENTA","PETUN","PINSU","PKART","PLTUR","POLHO","POLTK","PRZMA","QNBFB",
-    "QNBFL","RAYSG","RHEAG","RNPOL","RUBNS","SAFKR","SAMAT","SANEL","SANFM","SANKO",
-    "SARKY","SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM",
-    "SILVR","SKBNK","SMART","SMILE","SNPAM","SONME","SUWEN","TARKM","TATEN","TATGD",
-    "TBORG","TEKTU","TGSAS","TIRE","TMSN","TRCAS","TRILC","TSPOR","TUCLK","TUREX",
-    "TURSG","TUYAP","ULUUN","USAK","VAKFN","VAKKO","VANGD","VBTYZ","VERUS","VKGYO",
-    "YAPRK","YATAS","YBTAS","YESIL","YUNSA","ZOREN"
+    "MRDIN","MRSHL","MSGYO","MTRKS","NATEN","NBORU","NTGAZ","NTHOL","NUGYO","NUHCM",
+    "OBASE","ODAS","ORGE","ORMA","OSTIM","PAMEL","PAPIL","PARSN","PASEU","PENGD",
+    "PENTA","PETUN","PINSU","PKART","PLTUR","POLHO","POLTK","PRZMA","QNBFB","QNBFL",
+    "RAYSG","RHEAG","RNPOL","RUBNS","SAFKR","SAMAT","SANEL","SANFM","SANKO","SARKY",
+    "SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM","SILVR",
+    "SKBNK","SMART","SMILE","SNPAM","SONME","SUWEN","TARKM","TATEN","TATGD","TBORG",
+    "TEKTU","TGSAS","TIRE","TMSN","TRCAS","TRILC","TSPOR","TUCLK","TUREX","TURSG",
+    "TUYAP","ULUUN","USAK","VAKFN","VAKKO","VANGD","VBTYZ","VERUS","VKGYO","YAPRK",
+    "YATAS","YBTAS","YESIL","YUNSA","ZOREN"
 ]
 
 @app.route('/')
@@ -101,21 +101,102 @@ def get_all_bist_tickers():
             pass
     return BIST_FALLBACK
 
-def get_data(ticker, period="2y", interval="1d"):
+# ─────────────────────────────────────────────
+# TOPLU veri çekme – yfinance rate limit sorununu çözer
+# Tek tek çekmek yerine tüm listeyi bir seferde indir,
+# sonra her ticker'ı DataFrame'den al
+# ─────────────────────────────────────────────
+_bulk_cache = {}          # { ticker: df }
+_bulk_cache_date = None   # Son çekim tarihi
+
+def bulk_download(tickers, period="1y"):
+    """
+    Tüm BIST listesini tek bir yfinance.download() çağrısında indir.
+    Yahoo Finance tek tek sorgularda rate limit kesiyor,
+    toplu sorguda kesmez.
+    """
+    global _bulk_cache, _bulk_cache_date
+    today = datetime.now().date()
+    if _bulk_cache_date == today and _bulk_cache:
+        return  # Bugün zaten indirdik
+
+    symbols = [f"{t}.IS" for t in tickers]
     try:
-        df = yf.download(
-            f"{ticker}.IS",
+        raw = yf.download(
+            symbols,
             period=period,
-            interval=interval,
+            interval="1d",
             auto_adjust=True,
-            progress=False
+            progress=False,
+            group_by="ticker",   # Her ticker ayrı kolon grubu
+            threads=True         # Paralel indirme
         )
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        if not df.empty and len(df) > 10:
-            return df
+        # raw.columns → MultiIndex: (field, ticker)
+        # Her ticker için Close serisini çıkar
+        new_cache = {}
+        for t in tickers:
+            sym = f"{t}.IS"
+            try:
+                if isinstance(raw.columns, pd.MultiIndex):
+                    df = raw.xs(sym, axis=1, level=1)
+                else:
+                    df = raw  # Tek ticker durumu
+                df = df.dropna(how='all')
+                if len(df) > 10:
+                    new_cache[t] = df
+            except Exception:
+                pass
+        _bulk_cache      = new_cache
+        _bulk_cache_date = today
     except Exception:
         pass
+
+def get_data_from_cache(ticker):
+    """Önce cache'e bak, yoksa TwelveData'ya git."""
+    if ticker in _bulk_cache:
+        return _bulk_cache[ticker].copy()
+
+    # Cache miss → TwelveData yedek
+    if TWELVE_KEY:
+        try:
+            url = (
+                f"https://api.twelvedata.com/time_series"
+                f"?symbol={ticker}&exchange=XIST&interval=1day"
+                f"&apikey={TWELVE_KEY}&outputsize=500"
+            )
+            resp = requests.get(url, timeout=10).json()
+            if resp.get('status') != 'error' and 'values' in resp:
+                df = pd.DataFrame(resp['values'])
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df = df.set_index('datetime').sort_index()
+                df = df.rename(columns={
+                    'open': 'Open', 'high': 'High',
+                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+                }).astype(float)
+                return df
+        except Exception:
+            pass
+
+    return pd.DataFrame()
+
+def get_data(ticker, period="2y", interval="1d"):
+    """Optimize + manuel /add için tekil veri çekme (retry ile)."""
+    for attempt in range(3):
+        try:
+            df = yf.download(
+                f"{ticker}.IS",
+                period=period,
+                interval=interval,
+                auto_adjust=True,
+                progress=False
+            )
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            if not df.empty and len(df) > 10:
+                return df
+        except Exception:
+            pass
+        time.sleep(2 * (attempt + 1))   # 2s, 4s, 6s backoff
 
     if TWELVE_KEY:
         try:
@@ -125,16 +206,15 @@ def get_data(ticker, period="2y", interval="1d"):
                 f"&apikey={TWELVE_KEY}&outputsize=500"
             )
             resp = requests.get(url, timeout=10).json()
-            if resp.get('status') == 'error' or 'values' not in resp:
-                return pd.DataFrame()
-            df = pd.DataFrame(resp['values'])
-            df['datetime'] = pd.to_datetime(df['datetime'])
-            df = df.set_index('datetime').sort_index()
-            df = df.rename(columns={
-                'open': 'Open', 'high': 'High',
-                'low': 'Low', 'close': 'Close', 'volume': 'Volume'
-            }).astype(float)
-            return df
+            if resp.get('status') != 'error' and 'values' in resp:
+                df = pd.DataFrame(resp['values'])
+                df['datetime'] = pd.to_datetime(df['datetime'])
+                df = df.set_index('datetime').sort_index()
+                df = df.rename(columns={
+                    'open': 'Open', 'high': 'High',
+                    'low': 'Low', 'close': 'Close', 'volume': 'Volume'
+                }).astype(float)
+                return df
         except Exception:
             pass
 
@@ -217,15 +297,25 @@ def scan_all_stocks(chat_id):
     chat_id = str(chat_id)
     if chat_id not in watchlist or not watchlist[chat_id]:
         return
+
+    tickers = watchlist[chat_id]
+    total   = len(tickers)
+
+    # ── ADIM 1: Toplu indirme (rate limit olmaz) ──
+    bot.send_message(chat_id, f"Veriler indiriliyor ({total} hisse)...")
+    bulk_download(tickers, period="1y")
+
+    # ── ADIM 2: Her hisseyi analiz et ──
     messages = []
-    total    = len(watchlist[chat_id])
     no_data  = 0
-    for ticker in watchlist[chat_id]:
+
+    for ticker in tickers:
         try:
-            df = get_data(ticker, "1y", "1d")
+            df = get_data_from_cache(ticker)
             if df.empty or len(df) < 20:
                 no_data += 1
                 continue
+
             df['RSI']   = calc_rsi(df['Close'], 14)
             ema_pair    = best_emas.get(ticker, (9, 21))
             df['EMA_s'] = calc_ema(df['Close'], ema_pair[0])
@@ -233,14 +323,18 @@ def scan_all_stocks(chat_id):
             df          = df.dropna(subset=['RSI', 'EMA_s', 'EMA_l'])
             if len(df) < 2:
                 continue
+
             cross_up   = (df['EMA_s'].iloc[-2] <= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] > df['EMA_l'].iloc[-1])
             cross_down = (df['EMA_s'].iloc[-2] >= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] < df['EMA_l'].iloc[-1])
+
             signal = ""
             if cross_up:
                 signal = "AL - EMA CROSS UP"
             elif cross_down:
                 signal = "SAT - EMA CROSS DOWN"
+
             div_type, div_msg = detect_divergence(df)
+
             if signal or div_type:
                 vol      = df['Close'].pct_change().std() * 100
                 karakter = "Yuksek Vol" if vol > 2 else "Dusuk Vol"
@@ -255,15 +349,18 @@ def scan_all_stocks(chat_id):
                 messages.append(msg)
         except Exception:
             continue
-        time.sleep(0.2)
+
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
     else:
         bot.send_message(
             chat_id,
-            f"Tarama bitti. {total} hisse tarandı, {no_data} veri yok.\nBugün sinyal yok."
+            f"Tarama bitti. {total} hisse, {no_data} veri yok.\nBugün sinyal yok."
         )
 
+# ─────────────────────────────────────────────
+# Telegram komutları
+# ─────────────────────────────────────────────
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(
@@ -275,7 +372,7 @@ def start(message):
         "/check - Manuel tarama\n"
         "/optimize HEKTS - En iyi EMA bul\n"
         "/watchlist - Listeyi goster\n"
-        "/debug - Baglanti durumunu kontrol et",
+        "/debug - Baglanti durumu",
         parse_mode='Markdown'
     )
 
@@ -283,12 +380,12 @@ def start(message):
 def debug(message):
     lines = []
     lines.append(f"TOKEN: {'VAR' if TOKEN else 'YOK'}")
-    lines.append(f"TWELVE_DATA_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK - yedek liste kullanilacak'}")
-    lines.append(f"RENDER_URL: {RENDER_URL if RENDER_URL else 'YOK - keep-alive kapali'}")
+    lines.append(f"TWELVE_DATA_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}")
+    lines.append(f"RENDER_URL: {RENDER_URL or 'YOK'}")
     lines.append(f"PORT: {PORT}")
     chat_id = str(message.chat.id)
-    lst     = watchlist.get(chat_id, [])
-    lines.append(f"Watchlist: {len(lst)} hisse")
+    lines.append(f"Watchlist: {len(watchlist.get(chat_id, []))} hisse")
+    lines.append(f"Bulk cache: {len(_bulk_cache)} hisse ({_bulk_cache_date or 'bos'})")
     if TWELVE_KEY:
         try:
             r = requests.get(
@@ -300,14 +397,12 @@ def debug(message):
             else:
                 lines.append(f"TwelveData: OK - {len(r.get('data',[]))} hisse")
         except Exception as e:
-            lines.append(f"TwelveData: BAGLANTI HATASI - {e}")
-    else:
-        lines.append("TwelveData: Key yok, yedek liste aktif")
+            lines.append(f"TwelveData: HATA - {e}")
     try:
         test = yf.download("THYAO.IS", period="5d", progress=False)
         if isinstance(test.columns, pd.MultiIndex):
             test.columns = test.columns.get_level_values(0)
-        lines.append(f"yfinance THYAO: {'OK - ' + str(len(test)) + ' gun veri' if not test.empty else 'VERI YOK'}")
+        lines.append(f"yfinance: {'OK - ' + str(len(test)) + ' gun' if not test.empty else 'VERI YOK'}")
     except Exception as e:
         lines.append(f"yfinance: HATA - {e}")
     bot.reply_to(message, "\n".join(lines))
@@ -349,17 +444,14 @@ def add_all(message):
         1 for t in tickers
         if t not in watchlist[chat_id] and not watchlist[chat_id].append(t)
     )
-    kaynak = "TwelveData" if TWELVE_KEY else "yedek liste (hardcoded)"
-    bot.reply_to(
-        message,
-        f"{added} hisse eklendi! Toplam: {len(watchlist[chat_id])}\nKaynak: {kaynak}"
-    )
+    kaynak = "TwelveData" if TWELVE_KEY else "yedek liste"
+    bot.reply_to(message, f"{added} hisse eklendi! Toplam: {len(watchlist[chat_id])}\nKaynak: {kaynak}")
 
 @bot.message_handler(commands=['optimize'])
 def optimize(message):
     try:
         ticker = message.text.split()[1].upper().replace('.IS', '')
-        bot.reply_to(message, f"{ticker} optimize ediliyor (20-30 sn)...")
+        bot.reply_to(message, f"{ticker} optimize ediliyor...")
         pair = find_best_ema_pair(ticker)
         best_emas[ticker] = pair
         bot.reply_to(message, f"{ticker} Best EMA: {pair[0]}-{pair[1]}")
@@ -373,8 +465,8 @@ def manual_check(message):
     if not lst:
         bot.reply_to(message, "Liste bos! Once /addall yazin.")
         return
-    bot.reply_to(message, f"{len(lst)} hisse taranıyor...")
-    scan_all_stocks(chat_id)
+    bot.reply_to(message, f"{len(lst)} hisse icin tarama basliyor...")
+    threading.Thread(target=scan_all_stocks, args=(chat_id,), daemon=True).start()
 
 @bot.message_handler(commands=['watchlist'])
 def show_list(message):
