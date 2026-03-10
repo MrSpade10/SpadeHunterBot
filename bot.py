@@ -591,6 +591,42 @@ def debug(message):
     ]
     bot.reply_to(message, "\n".join(lines))
 
+@bot.message_handler(commands=['rawapi'])
+def raw_api(message):
+    """Ham API cevabını göster – hangi format çalışıyor?"""
+    try:
+        ticker = message.text.split()[1].upper().replace('.IS','')
+    except IndexError:
+        bot.reply_to(message, "Kullanim: /rawapi HEKTS"); return
+
+    if not TWELVE_KEY:
+        bot.reply_to(message, "TWELVE_KEY tanimli degil."); return
+
+    bot.reply_to(message, f"{ticker} icin ham API cevabi aliniyor...")
+
+    urls = [
+        ("exchange=XIST", f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize=10"),
+        ("symbol:XIST",   f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize=10"),
+    ]
+    for name, url in urls:
+        try:
+            resp = requests.get(url, timeout=15).json()
+            if 'values' in resp:
+                rows = len(resp['values'])
+                sample = resp['values'][0] if rows > 0 else {}
+                bot.send_message(str(message.chat.id),
+                    f"OK [{name}]: {rows} satir\n"
+                    f"Ilk satir: {sample}\n"
+                    f"Meta: {resp.get('meta',{})}"
+                )
+            else:
+                bot.send_message(str(message.chat.id),
+                    f"FAIL [{name}]: {resp.get('message') or resp.get('status','?')}"
+                )
+        except Exception as e:
+            bot.send_message(str(message.chat.id), f"HATA [{name}]: {e}")
+        time.sleep(2)
+
 @bot.message_handler(commands=['add'])
 def add_stock(message):
     try:
