@@ -300,17 +300,18 @@ _api_credits_used = 0   # Oturum boyunca kullanılan kredi sayacı
 
 def get_all_bist_tickers():
     if TWELVE_KEY:
-        try:
-            resp = requests.get(
-                f"https://api.twelvedata.com/stocks?exchange=XIST&apikey={TWELVE_KEY}",
-                timeout=15
-            ).json()
-            if resp.get('status') != 'error':
-                t = [i['symbol'] for i in resp.get('data',[]) if i.get('exchange')=='XIST']
-                if t:
-                    return t[:600]
-        except Exception:
-            pass
+        for exchange in ['BIST', 'XIST']:
+            try:
+                resp = requests.get(
+                    f"https://api.twelvedata.com/stocks?exchange={exchange}&apikey={TWELVE_KEY}",
+                    timeout=15
+                ).json()
+                if resp.get('status') != 'error':
+                    t = [i['symbol'] for i in resp.get('data',[]) if i.get('exchange') in ('BIST','XIST')]
+                    if t:
+                        return t[:600]
+            except Exception:
+                pass
     return BIST_FALLBACK
 
 def fetch_from_twelvedata(ticker, outputsize=365):
@@ -323,8 +324,11 @@ def fetch_from_twelvedata(ticker, outputsize=365):
         return pd.DataFrame()
 
     urls = [
-        f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=BIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
         f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        f"https://api.twelvedata.com/time_series?symbol={ticker}%3ABIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        f"https://api.twelvedata.com/time_series?symbol={ticker}.IS&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
     ]
     for url in urls:
         try:
@@ -593,7 +597,6 @@ def debug(message):
 
 @bot.message_handler(commands=['rawapi'])
 def raw_api(message):
-    """Ham API cevabını göster – hangi format çalışıyor?"""
     try:
         ticker = message.text.split()[1].upper().replace('.IS','')
     except IndexError:
@@ -602,26 +605,27 @@ def raw_api(message):
     if not TWELVE_KEY:
         bot.reply_to(message, "TWELVE_KEY tanimli degil."); return
 
-    bot.reply_to(message, f"{ticker} icin ham API cevabi aliniyor...")
+    bot.reply_to(message, f"{ticker} icin 5 format deneniyor...")
 
+    base = f"https://api.twelvedata.com/time_series?interval=1day&apikey={TWELVE_KEY}&outputsize=5"
     urls = [
-        ("exchange=XIST", f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize=10"),
-        ("symbol:XIST",   f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize=10"),
+        ("exchange=BIST",      f"{base}&symbol={ticker}&exchange=BIST"),
+        ("exchange=XIST",      f"{base}&symbol={ticker}&exchange=XIST"),
+        ("symbol=TICKER:BIST", f"{base}&symbol={ticker}%3ABIST"),
+        ("symbol=TICKER:XIST", f"{base}&symbol={ticker}%3AXIST"),
+        ("symbol=TICKER.IS",   f"{base}&symbol={ticker}.IS"),
     ]
     for name, url in urls:
         try:
             resp = requests.get(url, timeout=15).json()
             if 'values' in resp:
-                rows = len(resp['values'])
-                sample = resp['values'][0] if rows > 0 else {}
                 bot.send_message(str(message.chat.id),
-                    f"OK [{name}]: {rows} satir\n"
-                    f"Ilk satir: {sample}\n"
+                    f"OK [{name}]: {len(resp['values'])} satir\n"
                     f"Meta: {resp.get('meta',{})}"
                 )
             else:
                 bot.send_message(str(message.chat.id),
-                    f"FAIL [{name}]: {resp.get('message') or resp.get('status','?')}"
+                    f"FAIL [{name}]: {resp.get('message','?')[:120]}"
                 )
         except Exception as e:
             bot.send_message(str(message.chat.id), f"HATA [{name}]: {e}")
