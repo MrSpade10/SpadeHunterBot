@@ -14,7 +14,7 @@ from flask import Flask, request, abort
 load_dotenv()
 TOKEN      = (os.getenv('TELEGRAM_TOKEN') or '').strip()
 TWELVE_KEY = (os.getenv('TWELVE_DATA_KEY') or '').strip()
-RENDER_URL = (os.getenv('RENDER_URL') or '').strip()   # https://SERVIS.onrender.com
+RENDER_URL = (os.getenv('RENDER_URL') or '').strip()
 PORT       = int(os.getenv('PORT', 10000))
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
@@ -61,8 +61,7 @@ BIST_FALLBACK = [
 ]
 
 # ─────────────────────────────────────────────
-# Flask – Webhook endpoint
-# Polling yok → 409 Conflict olmaz
+# Flask – Webhook
 # ─────────────────────────────────────────────
 @app.route('/')
 def home():
@@ -75,34 +74,20 @@ def health():
 @app.route(f'/webhook/{TOKEN}', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
-        json_str = request.get_data(as_text=True)
-        update   = telebot.types.Update.de_json(json_str)
-        threading.Thread(
-            target=bot.process_new_updates,
-            args=([update],),
-            daemon=True
-        ).start()
+        update = telebot.types.Update.de_json(request.get_data(as_text=True))
+        threading.Thread(target=bot.process_new_updates, args=([update],), daemon=True).start()
         return 'OK', 200
     abort(403)
 
-# ─────────────────────────────────────────────
-# Webhook'u Telegram'a kaydet
-# ─────────────────────────────────────────────
 def set_webhook():
     if not RENDER_URL:
-        print("HATA: RENDER_URL env degiskeni eksik! Webhook kurulamadi.")
+        print("HATA: RENDER_URL eksik!")
         return
-    webhook_url = f"{RENDER_URL}/webhook/{TOKEN}"
-    # Önce eskiyi sil
     bot.remove_webhook()
     time.sleep(1)
-    # Yenisini kaydet
-    result = bot.set_webhook(url=webhook_url)
-    print(f"Webhook kuruldu: {webhook_url} → {result}")
+    result = bot.set_webhook(url=f"{RENDER_URL}/webhook/{TOKEN}")
+    print(f"Webhook: {result}")
 
-# ─────────────────────────────────────────────
-# Keep-alive
-# ─────────────────────────────────────────────
 def keep_alive():
     if not RENDER_URL:
         return
@@ -129,52 +114,71 @@ def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
 # ─────────────────────────────────────────────
-# TwelveData veri çekme
+# TwelveData – 3 farklı URL formatını dene
+# TwelveData bazen exchange= kabul etmiyor,
+# symbol=TICKER:XIST formatı daha güvenilir
 # ─────────────────────────────────────────────
-def get_all_bist_tickers():
-    if TWELVE_KEY:
-        try:
-            url  = f"https://api.twelvedata.com/stocks?exchange=XIST&apikey={TWELVE_KEY}"
-            resp = requests.get(url, timeout=15).json()
-            if resp.get('status') != 'error':
-                data    = resp.get('data', [])
-                tickers = [item['symbol'] for item in data if item.get('exchange') == 'XIST']
-                if tickers:
-                    return tickers[:600]
-        except Exception:
-            pass
-    return BIST_FALLBACK
-
 def fetch_from_twelvedata(ticker, outputsize=365):
     if not TWELVE_KEY:
         return pd.DataFrame()
-    try:
-        url  = (
-            f"https://api.twelvedata.com/time_series"
-            f"?symbol={ticker}&exchange=XIST&interval=1day"
-            f"&apikey={TWELVE_KEY}&outputsize={outputsize}"
-        )
-        resp = requests.get(url, timeout=15).json()
-        if resp.get('status') == 'error' or 'values' not in resp:
-            return pd.DataFrame()
-        df = pd.DataFrame(resp['values'])
-        df['datetime'] = pd.to_datetime(df['datetime'])
-        df = df.set_index('datetime').sort_index()
-        df = df.rename(columns={'open':'Open','high':'High','low':'Low','close':'Close','volume':'Volume'})
-        for col in ['Open','High','Low','Close','Volume']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        return df
-    except Exception:
-        return pd.DataFrame()
+
+    # Denenecek URL formatları (sırayla)
+    urls = [
+        # Format 1: symbol=TICKER:XIST  ← en güvenilir
+        f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        # Format 2: symbol=TICKER&exchange=XIST
+        f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+        # Format 3: symbol=TICKER.IS  (bazı sağlayıcılar bu formatı tanır)
+        f"https://api.twelvedata.com/time_series?symbol={ticker}.IS&interval=1day&apikey={TWELVE_KEY}&outputsize={outputsize}",
+    ]
+
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=15).json()
+            if resp.get('status') == 'error' or 'values' not in resp:
+                continue
+            df = pd.DataFrame(resp['values'])
+            df['datetime'] = pd.to_datetime(df['datetime'])
+            df = df.set_index('datetime').sort_index()
+            df = df.rename(columns={
+                'open':'Open','high':'High','low':'Low',
+                'close':'Close','volume':'Volume'
+            })
+            for col in ['Open','High','Low','Close','Volume']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
+            df = df.dropna(subset=['Close'])
+            if len(df) > 5:
+                return df
+        except Exception:
+            continue
+        time.sleep(1)
+
+    return pd.DataFrame()
+
+def get_all_bist_tickers():
+    if TWELVE_KEY:
+        try:
+            resp = requests.get(
+                f"https://api.twelvedata.com/stocks?exchange=XIST&apikey={TWELVE_KEY}",
+                timeout=15
+            ).json()
+            if resp.get('status') != 'error':
+                data = resp.get('data', [])
+                t = [item['symbol'] for item in data if item.get('exchange') == 'XIST']
+                if t:
+                    return t[:600]
+        except Exception:
+            pass
+    return BIST_FALLBACK
 
 def bulk_fetch(tickers, chat_id):
     global _cache_date
     to_fetch = [t for t in tickers if t not in _price_cache]
     if not to_fetch:
+        bot.send_message(chat_id, "Cache hazir, analiz basliyor...")
         return
-    total   = len(to_fetch)
-    fetched = 0
+    total = len(to_fetch); fetched = 0
     for i, ticker in enumerate(to_fetch):
         df = fetch_from_twelvedata(ticker)
         if not df.empty:
@@ -219,24 +223,24 @@ def find_best_ema_pair(ticker):
         return (9, 21)
     pairs = [(3,5),(5,8),(8,13),(9,21),(12,26),(20,50)]
     best_profit, best_pair = -999.0, (9, 21)
-    for short, long in pairs:
-        tmp          = df.copy()
-        tmp['ema_s'] = calc_ema(tmp['Close'], short)
-        tmp['ema_l'] = calc_ema(tmp['Close'], long)
-        tmp          = tmp.dropna(subset=['ema_s','ema_l'])
+    for short, long_ in pairs:
+        tmp = df.copy()
+        tmp['es'] = calc_ema(tmp['Close'], short)
+        tmp['el'] = calc_ema(tmp['Close'], long_)
+        tmp = tmp.dropna(subset=['es','el'])
         profit = 0.0; in_pos = False; entry = 0.0
         for i in range(1, len(tmp)):
-            ep = tmp['ema_s'].iloc[i-1]; el = tmp['ema_l'].iloc[i-1]
-            ec = tmp['ema_s'].iloc[i];   lc = tmp['ema_l'].iloc[i]
-            if not in_pos and ec > lc and ep <= el:
+            ep = tmp['es'].iloc[i-1]; lp = tmp['el'].iloc[i-1]
+            ec = tmp['es'].iloc[i];   lc = tmp['el'].iloc[i]
+            if not in_pos and ec > lc and ep <= lp:
                 in_pos = True; entry = tmp['Close'].iloc[i]
-            elif in_pos and ec < lc and ep >= el:
+            elif in_pos and ec < lc and ep >= lp:
                 profit += (tmp['Close'].iloc[i] - entry) / entry * 100
                 in_pos = False
         if in_pos:
             profit += (tmp['Close'].iloc[-1] - entry) / entry * 100
         if profit > best_profit:
-            best_profit, best_pair = profit, (short, long)
+            best_profit, best_pair = profit, (short, long_)
     return best_pair
 
 def send_long_message(chat_id, text):
@@ -258,13 +262,16 @@ def send_long_message(chat_id, text):
 def scan_all_stocks(chat_id):
     chat_id = str(chat_id)
     if not watchlist.get(chat_id):
+        bot.send_message(chat_id, "Liste bos! /addall yazin.")
         return
     tickers = watchlist[chat_id]
     total   = len(tickers)
+    cached  = sum(1 for t in tickers if t in _price_cache)
+    to_dl   = total - cached
     bot.send_message(chat_id,
         f"{total} hisse taranacak.\n"
-        f"Rate limit: 8 istek/dk → ~{total * TD_DELAY // 60:.0f} dk (cache yoksa).\n"
-        f"Cache dolunca ayni gun anlık biter."
+        f"Cache: {cached} hisse hazir, {to_dl} indirilecek.\n"
+        f"{'~' + str(int(to_dl * TD_DELAY // 60)) + ' dk bekleniyor.' if to_dl > 0 else 'Hemen basliyor!'}"
     )
     bulk_fetch(tickers, chat_id)
     messages = []; no_data = 0
@@ -275,33 +282,31 @@ def scan_all_stocks(chat_id):
                 no_data += 1; continue
             df = df.copy()
             df['RSI']   = calc_rsi(df['Close'], 14)
-            ema_pair    = best_emas.get(ticker, (9, 21))
-            df['EMA_s'] = calc_ema(df['Close'], ema_pair[0])
-            df['EMA_l'] = calc_ema(df['Close'], ema_pair[1])
+            ep          = best_emas.get(ticker, (9, 21))
+            df['EMA_s'] = calc_ema(df['Close'], ep[0])
+            df['EMA_l'] = calc_ema(df['Close'], ep[1])
             df          = df.dropna(subset=['RSI','EMA_s','EMA_l'])
             if len(df) < 2: continue
-            cross_up   = (df['EMA_s'].iloc[-2] <= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] > df['EMA_l'].iloc[-1])
-            cross_down = (df['EMA_s'].iloc[-2] >= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] < df['EMA_l'].iloc[-1])
-            signal     = "AL - EMA CROSS UP" if cross_up else ("SAT - EMA CROSS DOWN" if cross_down else "")
-            div_type, div_msg = detect_divergence(df)
-            if signal or div_type:
+            cup  = (df['EMA_s'].iloc[-2] <= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] > df['EMA_l'].iloc[-1])
+            cdn  = (df['EMA_s'].iloc[-2] >= df['EMA_l'].iloc[-2]) and (df['EMA_s'].iloc[-1] < df['EMA_l'].iloc[-1])
+            sig  = "AL - EMA CROSS UP" if cup else ("SAT - EMA CROSS DOWN" if cdn else "")
+            dt, dm = detect_divergence(df)
+            if sig or dt:
                 vol = df['Close'].pct_change().std() * 100
-                msg = (
-                    f"*{ticker}* ({'Yuksek' if vol > 2 else 'Dusuk'} Vol)\n"
-                    f"{signal}\n"
-                    f"RSI: {df['RSI'].iloc[-1]:.1f}\n"
-                    f"{div_type or 'Normal'} {div_msg or ''}\n"
-                    f"EMA: {ema_pair[0]}-{ema_pair[1]}\n"
+                messages.append(
+                    f"*{ticker}* ({'Yuksek' if vol>2 else 'Dusuk'} Vol)\n"
+                    f"{sig}\nRSI: {df['RSI'].iloc[-1]:.1f}\n"
+                    f"{dt or 'Normal'} {dm or ''}\n"
+                    f"EMA: {ep[0]}-{ep[1]}\n"
                     f"https://tr.tradingview.com/chart/?symbol=BIST:{ticker}"
                 )
-                messages.append(msg)
         except Exception:
             continue
     if messages:
         send_long_message(chat_id, "\n\n".join(messages))
     else:
         bot.send_message(chat_id,
-            f"Tarama bitti. {total} hisse, {no_data} veri yok. Bugun sinyal yok.")
+            f"Tarama bitti. {total} hisse ({no_data} veri yok). Sinyal yok.")
 
 # ─────────────────────────────────────────────
 # Komutlar
@@ -309,7 +314,7 @@ def scan_all_stocks(chat_id):
 @bot.message_handler(commands=['start'])
 def start(message):
     bot.reply_to(message,
-        "*BIST Bot* - RSI Diverjans + EMA Kesisim\n\n"
+        "*BIST Bot*\n\n"
         "/addall - Tum BIST hisselerini ekle\n"
         "/add HEKTS - Tek hisse ekle\n"
         "/remove HEKTS - Listeden cikar\n"
@@ -317,18 +322,56 @@ def start(message):
         "/clearcache - Onbellegi temizle\n"
         "/optimize HEKTS - En iyi EMA bul\n"
         "/watchlist - Listeyi goster\n"
+        "/testapi HEKTS - API ham cevabini goster\n"
         "/debug - Baglanti durumu",
         parse_mode='Markdown'
     )
 
+# ─────────────────────────────────────────────
+# /testapi – TwelveData ham cevabını göster
+# Hangi URL formatı çalışıyor bunu anlamak için
+# ─────────────────────────────────────────────
+@bot.message_handler(commands=['testapi'])
+def test_api(message):
+    try:
+        ticker = message.text.split()[1].upper().replace('.IS','')
+    except IndexError:
+        bot.reply_to(message, "Kullanim: /testapi HEKTS"); return
+
+    bot.reply_to(message, f"{ticker} icin 3 format deneniyor...")
+
+    formats = [
+        ("TICKER:XIST", f"https://api.twelvedata.com/time_series?symbol={ticker}%3AXIST&interval=1day&apikey={TWELVE_KEY}&outputsize=5"),
+        ("TICKER+exchange=XIST", f"https://api.twelvedata.com/time_series?symbol={ticker}&exchange=XIST&interval=1day&apikey={TWELVE_KEY}&outputsize=5"),
+        ("TICKER.IS", f"https://api.twelvedata.com/time_series?symbol={ticker}.IS&interval=1day&apikey={TWELVE_KEY}&outputsize=5"),
+    ]
+
+    results = []
+    for name, url in formats:
+        try:
+            resp = requests.get(url, timeout=15).json()
+            if 'values' in resp:
+                results.append(f"✅ {name}: {len(resp['values'])} satir veri geldi")
+            else:
+                results.append(f"❌ {name}: {resp.get('message') or resp.get('status','?')}")
+        except Exception as e:
+            results.append(f"❌ {name}: {e}")
+        time.sleep(2)
+
+    bot.send_message(str(message.chat.id), "\n".join(results))
+
 @bot.message_handler(commands=['debug'])
 def debug(message):
-    wh = bot.get_webhook_info()
+    try:
+        wh = bot.get_webhook_info()
+        wh_url = wh.url or 'KURULU DEGIL'
+    except Exception:
+        wh_url = 'ALINAMADI'
     lines = [
         f"TOKEN: {'VAR' if TOKEN else 'YOK'}",
-        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK - bot calisemaz!'}",
-        f"RENDER_URL: {RENDER_URL or 'YOK - webhook kurulamaz!'}",
-        f"Webhook URL: {wh.url or 'KURULU DEGIL'}",
+        f"TWELVE_KEY: {'VAR (' + TWELVE_KEY[:4] + '...)' if TWELVE_KEY else 'YOK'}",
+        f"RENDER_URL: {RENDER_URL or 'YOK'}",
+        f"Webhook: {wh_url}",
         f"Watchlist: {len(watchlist.get(str(message.chat.id), []))} hisse",
         f"Cache: {len(_price_cache)} hisse ({_cache_date or 'bos'})",
     ]
@@ -338,14 +381,10 @@ def debug(message):
                 f"https://api.twelvedata.com/stocks?exchange=XIST&apikey={TWELVE_KEY}",
                 timeout=10
             ).json()
-            lines.append(f"TwelveData: {'OK - ' + str(len(r.get('data',[]))) + ' hisse' if r.get('status') != 'error' else 'HATA - ' + r.get('message','?')}")
+            cnt = len(r.get('data', []))
+            lines.append(f"TwelveData stocks: {'OK - ' + str(cnt) + ' hisse' if r.get('status') != 'error' else 'HATA - ' + r.get('message','?')}")
         except Exception as e:
-            lines.append(f"TwelveData: BAGLANTI HATASI - {e}")
-        try:
-            df = fetch_from_twelvedata("THYAO", outputsize=5)
-            lines.append(f"THYAO veri testi: {'OK - ' + str(len(df)) + ' satir' if not df.empty else 'BASARISIZ'}")
-        except Exception as e:
-            lines.append(f"THYAO testi: HATA - {e}")
+            lines.append(f"TwelveData stocks: HATA - {e}")
     bot.reply_to(message, "\n".join(lines))
 
 @bot.message_handler(commands=['add'])
@@ -384,7 +423,8 @@ def add_all(message):
     added = sum(1 for t in tickers if t not in watchlist[chat_id] and not watchlist[chat_id].append(t))
     bot.reply_to(message,
         f"{added} hisse eklendi! Toplam: {len(watchlist[chat_id])}\n"
-        f"Kaynak: {'TwelveData' if TWELVE_KEY else 'yedek liste'}")
+        f"Kaynak: {'TwelveData' if TWELVE_KEY else 'yedek liste'}\n"
+        f"Simdi /testapi THYAO yazarak API'nin calistigini dogrula.")
 
 @bot.message_handler(commands=['clearcache'])
 def clear_cache(message):
@@ -397,10 +437,16 @@ def optimize(message):
         ticker = message.text.split()[1].upper().replace('.IS','')
         bot.reply_to(message, f"{ticker} icin veri cekiliyor...")
         pair = find_best_ema_pair(ticker)
-        best_emas[ticker] = pair
-        bot.reply_to(message, f"{ticker} Best EMA: {pair[0]}-{pair[1]}")
-    except Exception:
-        bot.reply_to(message, "Kullanim: /optimize HEKTS")
+        if pair == (9, 21):
+            bot.reply_to(message,
+                f"{ticker}: Veri alinamadi veya yetersiz (<100 gun).\n"
+                f"Varsayilan 9-21 kullanildi.\n"
+                f"Kontrol icin: /testapi {ticker}")
+        else:
+            best_emas[ticker] = pair
+            bot.reply_to(message, f"{ticker} Best EMA: {pair[0]}-{pair[1]}")
+    except Exception as e:
+        bot.reply_to(message, f"Hata: {e}")
 
 @bot.message_handler(commands=['check'])
 def manual_check(message):
