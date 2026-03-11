@@ -1247,17 +1247,278 @@ def auto_scan():
     tr_tz = pytz.timezone('Europe/Istanbul')
     scanned_date = None
     while True:
-        now = datetime.now(tr_tz)
-        if now.hour == 18 and now.minute >= 5 and now.minute < 10 and scanned_date != now.date():
-            scanned_date = now.date()
-            for chat_id in wl_all_ids():
-                scan_all_stocks(chat_id)
+        try:
+            now = datetime.now(tr_tz)
+            if now.hour == 18 and now.minute >= 5 and now.minute < 10 and scanned_date != now.date():
+                scanned_date = now.date()
+                for chat_id in wl_all_ids():
+                    try:
+                        scan_all_stocks(chat_id)
+                    except Exception as e:
+                        print(f"auto_scan hisse hata {chat_id}: {e}")
+        except Exception as e:
+            print(f"auto_scan döngü hata: {e}")
         time.sleep(60)
 
+# ═══════════════════════════════════════════════
+# ÇÖKÜŞ KORUMA SİSTEMİ
+# ═══════════════════════════════════════════════
+
+# Bot başlangıç zamanı ve istatistikler
+_bot_start_time   = datetime.now(pytz.timezone('Europe/Istanbul'))
+_error_count      = 0
+_last_error       = None
+_last_error_time  = None
+_webhook_failures = 0
+
+def _notify_admin(msg):
+    """Tüm watchlist sahibi chat'lere hata bildirimi gönder."""
+    try:
+        for chat_id in wl_all_ids():
+            try:
+                bot.send_message(chat_id, f"⚠️ *Bot Uyarısı*\n{msg}", parse_mode='Markdown')
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+def safe_thread(target, args=(), name="thread", notify_on_crash=False):
+    """
+    Thread'i try/except içinde çalıştırır.
+    Çökerse loglar, yeniden başlatır ve bildirim gönderir.
+    """
+    global _error_count, _last_error, _last_error_time
+    def wrapper():
+        crash_count = 0
+        while True:
+            try:
+                target(*args)
+                break  # Normal çıkış
+            except Exception as e:
+                crash_count      += 1
+                _error_count     += 1
+                _last_error       = str(e)
+                _last_error_time  = datetime.now(pytz.timezone('Europe/Istanbul'))
+                print(f"[CRASH] {name}: {e}")
+
+                if notify_on_crash:
+                    _notify_admin(
+                        f"🔴 *Çökme Tespit Edildi!*\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚙️ Servis: `{name}`\n"
+                        f"❌ Hata: `{str(e)[:200]}`\n"
+                        f"🔢 Bu serviste çökme sayısı: {crash_count}\n"
+                        f"♻️ 30 saniye sonra yeniden başlatılıyor..."
+                    )
+
+                time.sleep(30)
+
+                # Yeniden başlatma bildirimi
+                if notify_on_crash:
+                    _notify_admin(
+                        f"✅ *Çökmeden Kurtarıldı!*\n"
+                        f"━━━━━━━━━━━━━━━━━━━\n"
+                        f"⚙️ Servis: `{name}`\n"
+                        f"🕐 Kurtarma zamanı: "
+                        f"{datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M:%S')}\n"
+                        f"🔢 Toplam kurtarma: {crash_count}\n"
+                        f"🟢 Bot çalışmaya devam ediyor."
+                    )
+
+                # Sürekli döngü olan thread'leri yeniden başlat
+                if name in ("auto_scan", "keep_alive", "watchdog"):
+                    continue
+                break
+    t = threading.Thread(target=wrapper, name=name, daemon=True)
+    t.start()
+    return t
+
+def watchdog():
+    """
+    Her 5 dakikada bir kritik thread'lerin hayatta olup olmadığını kontrol eder.
+    Ölmüşse yeniden başlatır. Webhook'un sağlıklı olup olmadığını kontrol eder.
+    """
+    global _webhook_failures
+    critical_threads = {}
+
+    def ensure_thread(name, target, args=()):
+        t = critical_threads.get(name)
+        if t is None or not t.is_alive():
+            print(f"[WATCHDOG] {name} yeniden baslatiliyor...")
+            new_t = threading.Thread(target=target, args=args, name=name, daemon=True)
+            new_t.start()
+            critical_threads[name] = new_t
+            return True
+        return False
+
+    while True:
+        try:
+            restarted = []
+
+            # keep_alive thread kontrolü
+            if ensure_thread("keep_alive", keep_alive):
+                restarted.append("keep_alive")
+
+            # auto_scan thread kontrolü
+            if ensure_thread("auto_scan", auto_scan):
+                restarted.append("auto_scan")
+
+            # Webhook sağlık kontrolü
+            if RENDER_URL:
+                try:
+                    r = requests.get(f"{RENDER_URL}/health", timeout=10)
+                    if r.status_code == 200:
+                        _webhook_failures = 0
+                    else:
+                        _webhook_failures += 1
+                except Exception:
+                    _webhook_failures += 1
+
+                # 3 ardışık başarısız health check → webhook'u yenile
+                if _webhook_failures >= 3:
+                    print("[WATCHDOG] Webhook yenileniyor...")
+                    try:
+                        set_webhook()
+                        _webhook_failures = 0
+                        _notify_admin("🔄 Webhook yenilendi (bağlantı sorunu tespit edildi)")
+                    except Exception as e:
+                        print(f"[WATCHDOG] Webhook yenileme hata: {e}")
+
+            if restarted:
+                _notify_admin(
+                    f"✅ *Çökmeden Kurtarıldı!*\n"
+                    f"━━━━━━━━━━━━━━━━━━━\n"
+                    f"♻️ Yeniden başlatılan: {', '.join(restarted)}\n"
+                    f"🕐 Kurtarma zamanı: "
+                    f"{datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M:%S')}\n"
+                    f"🟢 Bot çalışmaya devam ediyor."
+                )
+
+        except Exception as e:
+            print(f"[WATCHDOG] Hata: {e}")
+
+        time.sleep(5 * 60)  # Her 5 dakikada bir kontrol
+
+
+def global_exception_handler(exc_type, exc_value, exc_traceback):
+    """Yakalanmamış tüm exception'ları loglar."""
+    import traceback
+    global _error_count, _last_error, _last_error_time
+    _error_count    += 1
+    _last_error      = str(exc_value)
+    _last_error_time = datetime.now(pytz.timezone('Europe/Istanbul'))
+    tb_str = "".join(traceback.format_exception(exc_type, exc_value, exc_traceback))
+    print(f"[GLOBAL EXCEPTION]\n{tb_str}")
+
+
+@bot.message_handler(commands=['status'])
+def bot_status(message):
+    """Bot'un sağlık durumunu gösterir."""
+    tr_tz   = pytz.timezone('Europe/Istanbul')
+    now     = datetime.now(tr_tz)
+    uptime  = now - _bot_start_time
+    hours   = int(uptime.total_seconds() // 3600)
+    minutes = int((uptime.total_seconds() % 3600) // 60)
+
+    # Thread durumları
+    thread_names = [t.name for t in threading.enumerate()]
+    ka_ok   = "keep_alive" in thread_names
+    as_ok   = "auto_scan"  in thread_names
+    wd_ok   = "watchdog"   in thread_names
+
+    # DB durumu
+    db_ok = False
+    if DATABASE_URL:
+        try:
+            conn = db_connect()
+            if conn:
+                conn.close()
+                db_ok = True
+        except Exception:
+            pass
+
+    # Cache durumu
+    cache_count = pc_count_today()
+    wl_count    = len(wl_get(str(message.chat.id)))
+
+    lines = [
+        "🤖 *Bot Durum Raporu*",
+        f"━━━━━━━━━━━━━━━━━━━",
+        f"⏱ Çalışma süresi: {hours}sa {minutes}dk",
+        f"🕐 Başlangıç: {_bot_start_time.strftime('%d.%m.%Y %H:%M')}",
+        f"",
+        f"*── Servisler ──*",
+        f"{'✅' if ka_ok else '❌'} Keep-alive",
+        f"{'✅' if as_ok else '❌'} Auto-scan (18:05)",
+        f"{'✅' if wd_ok else '❌'} Watchdog",
+        f"{'✅' if db_ok else '⚠️ Yok'} Veritabanı",
+        f"",
+        f"*── Veriler ──*",
+        f"📋 Watchlist: {wl_count} hisse",
+        f"💾 Cache (bugün): {cache_count} hisse",
+        f"🔗 Webhook hata: {_webhook_failures}",
+        f"",
+        f"*── Hatalar ──*",
+        f"🔢 Toplam hata: {_error_count}",
+    ]
+
+    if _last_error:
+        t_str = _last_error_time.strftime('%H:%M:%S') if _last_error_time else "?"
+        lines.append(f"🔴 Son hata ({t_str}): `{_last_error[:100]}`")
+    else:
+        lines.append("✅ Son hata: Yok")
+
+    bot.reply_to(message, "\n".join(lines), parse_mode='Markdown')
+
+
+# ═══════════════════════════════════════════════
+# ANA BAŞLATICI
+# ═══════════════════════════════════════════════
 if __name__ == "__main__":
+    import sys
+
+    # Global exception handler kur
+    sys.excepthook = global_exception_handler
+
     print(f"BIST Bot baslatiliyor - PORT={PORT}")
-    db_init()
-    set_webhook()
-    threading.Thread(target=keep_alive, daemon=True).start()
-    threading.Thread(target=auto_scan,  daemon=True).start()
-    app.run(host='0.0.0.0', port=PORT)
+
+    # DB başlat
+    try:
+        db_init()
+    except Exception as e:
+        print(f"DB init hata (devam ediliyor): {e}")
+
+    # Webhook kur — başarısız olsa da devam et
+    try:
+        set_webhook()
+    except Exception as e:
+        print(f"Webhook hata (devam ediliyor): {e}")
+
+    # Kritik servisleri safe_thread ile başlat
+    safe_thread(keep_alive,  name="keep_alive",  notify_on_crash=True)
+    safe_thread(auto_scan,   name="auto_scan",   notify_on_crash=True)
+    safe_thread(watchdog,    name="watchdog",    notify_on_crash=True)
+
+    # Flask'ı yeniden başlatma mekanizmasıyla çalıştır
+    flask_crash_count = 0
+    while True:
+        try:
+            app.run(host='0.0.0.0', port=PORT)
+        except Exception as e:
+            flask_crash_count += 1
+            print(f"Flask hata, 10 saniye sonra yeniden baslatiliyor: {e}")
+            _notify_admin(
+                f"🔴 *Flask Sunucusu Çöktü!*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"❌ Hata: `{str(e)[:200]}`\n"
+                f"🔢 Flask çökme sayısı: {flask_crash_count}\n"
+                f"♻️ 10 saniye sonra yeniden başlatılıyor..."
+            )
+            time.sleep(10)
+            _notify_admin(
+                f"✅ *Flask Sunucusu Kurtarıldı!*\n"
+                f"━━━━━━━━━━━━━━━━━━━\n"
+                f"🕐 Kurtarma zamanı: "
+                f"{datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M:%S')}\n"
+                f"🟢 Bot çalışmaya devam ediyor."
+            )
