@@ -368,6 +368,7 @@ def _set_bot_commands():
         telebot.types.BotCommand("watchlist",    "İzleme listesini gör"),
         telebot.types.BotCommand("sinyal",       "Bugünkü sinyaller: /sinyal al | /sinyal sat"),
         telebot.types.BotCommand("analiz",       "Gemini AI analizi: /analiz THYAO"),
+        telebot.types.BotCommand("kredi",        "AI kullanım ve kredi durumu"),
         telebot.types.BotCommand("haber",        "Haberler: /haber | /haber THYAO"),
         telebot.types.BotCommand("bulten",       "Bülten: /bulten sabah | /bulten aksam"),
         telebot.types.BotCommand("optimize",     "Tek hisse EMA optimize"),
@@ -1900,11 +1901,45 @@ def news_to_text(news_list, max_items=10):
     return "\n".join(lines) if lines else "Haber bulunamadı."
 
 # ── Gemini API ────────────────────────────────────────────────
+def safe_send(chat_id, text, parse_mode='Markdown'):
+    """Markdown parse hatasında düz metin olarak gönder."""
+    try:
+        bot.send_message(chat_id, text, parse_mode=parse_mode)
+    except Exception:
+        # Markdown bozuksa tüm özel karakterleri temizle ve düz gönder
+        clean = text.replace('*','').replace('_','').replace('`','').replace('[','').replace(']','')
+        try:
+            bot.send_message(chat_id, clean)
+        except Exception as e:
+            print(f"safe_send hata: {e}")
+
+# ── Kullanım sayaçları (günlük) ──────────────────────────────
+_ai_usage = {
+    "gemini_today": 0,
+    "gemini_date": "",
+    "groq_today": 0,
+    "groq_date": "",
+    "groq_remaining_req": "?",
+    "groq_remaining_tokens": "?",
+    "groq_reset_req": "?",
+    "groq_reset_tokens": "?",
+    "gemini_last_error": None,
+    "groq_last_error": None,
+}
+
+def _ai_count(service):
+    """Günlük sayacı artır."""
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    if _ai_usage[f"{service}_date"] != today:
+        _ai_usage[f"{service}_today"] = 0
+        _ai_usage[f"{service}_date"] = today
+    _ai_usage[f"{service}_today"] += 1
+
 def gemini_ask(prompt, max_tokens=600):
     """Gemini'ye istek gönder, metin cevabı döndür."""
     if not GEMINI_KEY:
         return "⚠️ GEMINI_KEY tanımlı değil."
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4}
@@ -1913,8 +1948,11 @@ def gemini_ask(prompt, max_tokens=600):
         resp = requests.post(url, json=payload, timeout=20)
         resp.raise_for_status()
         data = resp.json()
+        _ai_count("gemini")
+        _ai_usage["gemini_last_error"] = None
         return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
+        _ai_usage["gemini_last_error"] = str(e)[:100]
         print(f"Gemini hata: {e}")
         return f"⚠️ Gemini yanıt vermedi: {str(e)[:80]}"
 
@@ -1961,8 +1999,17 @@ def groq_ask(prompt, max_tokens=800, model="llama-3.1-8b-instant"):
     try:
         resp = requests.post(url, json=payload, headers=headers, timeout=20)
         resp.raise_for_status()
+        # Rate limit headerlarını kaydet
+        h = resp.headers
+        _ai_usage["groq_remaining_req"]    = h.get("x-ratelimit-remaining-requests", "?")
+        _ai_usage["groq_remaining_tokens"] = h.get("x-ratelimit-remaining-tokens", "?")
+        _ai_usage["groq_reset_req"]        = h.get("x-ratelimit-reset-requests", "?")
+        _ai_usage["groq_reset_tokens"]     = h.get("x-ratelimit-reset-tokens", "?")
+        _ai_count("groq")
+        _ai_usage["groq_last_error"] = None
         return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
+        _ai_usage["groq_last_error"] = str(e)[:100]
         print(f"Groq hata: {e}")
         return f"⚠️ Groq yanıt vermedi: {str(e)[:80]}"
 
@@ -2069,7 +2116,7 @@ def cmd_analiz(message):
                 f"━━━━━━━━━━━━━━━━━━━\n"
                 f"📈 [TradingView](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})"
             )
-            bot.send_message(chat_id, msg, parse_mode='Markdown')
+            safe_send(chat_id, msg)
         except Exception as e:
             bot.send_message(chat_id, f"❌ Analiz hatası: {e}")
 
@@ -2088,8 +2135,7 @@ def cmd_haber(message):
         try:
             if ticker:
                 # Tek hisse haberi
-                bot.send_message(chat_id,
-                    f"📰 *{ticker}* için haberler çekiliyor...", parse_mode='Markdown')
+                bot.send_message(chat_id, f"📰 *{ticker}* için haberler çekiliyor...")
                 # Hem global hem BIST'ten çek, ticker ile filtrele
                 all_news = collect_news(["global","bist"], max_per_feed=8, ticker=ticker)
                 if not all_news:
@@ -2107,7 +2153,7 @@ def cmd_haber(message):
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"🕐 {datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}"
                 )
-                bot.send_message(chat_id, msg, parse_mode='Markdown')
+                safe_send(chat_id, msg)
 
             else:
                 # Bugünkü sinyal hisseleri için haberler + global haberler
@@ -2141,16 +2187,12 @@ def cmd_haber(message):
 
                 # Global özet
                 global_yorum = groq_news_summary(news_to_text(global_news, 8), "global piyasalar")
-                bot.send_message(chat_id,
-                    f"🌍 *Global Piyasa Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{global_yorum}",
-                    parse_mode='Markdown')
+                safe_send(chat_id, f"🌍 *Global Piyasa Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{global_yorum}")
                 time.sleep(1)
 
                 # BIST haberleri özeti
                 bist_yorum = groq_news_summary(news_to_text(bist_news, 8), "BIST ve Türk piyasaları")
-                bot.send_message(chat_id,
-                    f"📊 *BIST Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{bist_yorum}",
-                    parse_mode='Markdown')
+                safe_send(chat_id, f"📊 *BIST Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{bist_yorum}")
                 time.sleep(1)
 
                 # Sinyal çıkan hisseler için haber
@@ -2162,9 +2204,7 @@ def cmd_haber(message):
                         ticker_news = collect_news(["global","bist"], max_per_feed=6, ticker=t)
                         if ticker_news:
                             yorum = groq_ticker_news(t, news_to_text(ticker_news, 5))
-                            bot.send_message(chat_id,
-                                f"📰 *{t} Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{yorum}",
-                                parse_mode='Markdown')
+                            safe_send(chat_id, f"📰 *{t} Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{yorum}")
                             time.sleep(0.5)
                 else:
                     bot.send_message(chat_id,
@@ -2175,6 +2215,57 @@ def cmd_haber(message):
 
     ticker = parts[1].upper().replace(".IS","") if len(parts) > 1 else None
     threading.Thread(target=_run_haber, args=(ticker,), daemon=True).start()
+
+# ── /kredi komutu ────────────────────────────────────────────
+@bot.message_handler(commands=['kredi'])
+def cmd_kredi(message):
+    chat_id = str(message.chat.id)
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    now_str = datetime.now(tr_tz).strftime("%d.%m.%Y %H:%M")
+
+    # Gemini durumu
+    gemini_ok = "✅ Aktif" if GEMINI_KEY else "❌ Key yok"
+    gemini_used  = _ai_usage.get("gemini_today", 0)
+    gemini_limit = 1500
+    gemini_kalan = gemini_limit - gemini_used
+    gemini_bar   = "█" * min(20, int(gemini_used/gemini_limit*20)) + "░" * max(0, 20 - int(gemini_used/gemini_limit*20))
+    gemini_err   = _ai_usage.get("gemini_last_error")
+
+    # Groq durumu
+    groq_ok = "✅ Aktif" if GROQ_KEY else "❌ Key yok"
+    groq_used   = _ai_usage.get("groq_today", 0)
+    groq_rem_r  = _ai_usage.get("groq_remaining_req", "?")
+    groq_rem_t  = _ai_usage.get("groq_remaining_tokens", "?")
+    groq_rst_r  = _ai_usage.get("groq_reset_req", "?")
+    groq_err    = _ai_usage.get("groq_last_error")
+
+    msg = (
+        f"🤖 *AI Kredi & Kullanım Durumu*\n"
+        f"🕐 {now_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"\n"
+        f"🟣 *GEMINI* (Google AI) — {gemini_ok}\n"
+        f"├ Plan: Ücretsiz\n"
+        f"├ Günlük limit: {gemini_limit} istek\n"
+        f"├ Bugün kullanılan: {gemini_used}\n"
+        f"├ Kalan: ~{gemini_kalan} istek\n"
+        f"├ Doluluk: {gemini_bar} %{int(gemini_used/gemini_limit*100)}\n"
+        f"└ {'⚠️ Son hata: ' + gemini_err if gemini_err else '✅ Hata yok'}\n"
+        f"\n"
+        f"🟠 *GROQ* (Llama 3) — {groq_ok}\n"
+        f"├ Plan: Ücretsiz\n"
+        f"├ Bugün kullanılan: {groq_used} istek\n"
+        f"├ Anlık kalan istek: {groq_rem_r}\n"
+        f"├ Anlık kalan token: {groq_rem_t}\n"
+        f"├ Limit sıfırlama: {groq_rst_r}\n"
+        f"└ {'⚠️ Son hata: ' + groq_err if groq_err else '✅ Hata yok'}\n"
+        f"\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"💡 Limit sıfırlanma: Her gece 00:00 (Gemini) / Dakika bazlı (Groq)\n"
+        f"📊 Günlük tahmini kullanım: ~{len(wl_get(chat_id) or [])} hisse × 1 = {len(wl_get(chat_id) or [])} istek"
+    )
+
+    bot.send_message(chat_id, msg, parse_mode='Markdown')
 
 # ── /bulten komutu ───────────────────────────────────────────
 @bot.message_handler(commands=['bulten'])
@@ -2258,7 +2349,7 @@ Türkçe akşam bülteni:
 💡 STRATEJİ: (yarın için öneri)"""
 
     result = groq_ask(prompt, max_tokens=600)
-    bot.send_message(chat_id, result, parse_mode='Markdown')
+    safe_send(chat_id, result)
 
 
 # ═══════════════════════════════════════════════
@@ -2295,9 +2386,7 @@ def auto_scan():
                             if crisis:
                                 for chat_id in wl_all_ids():
                                     try:
-                                        bot.send_message(chat_id,
-                                            f"🚨 *GLOBAL KRİZ ALARMI*\n━━━━━━━━━━━━━━━━━━━\n{crisis}",
-                                            parse_mode='Markdown')
+                                        safe_send(chat_id, f"🚨 *GLOBAL KRİZ ALARMI*\n━━━━━━━━━━━━━━━━━━━\n{crisis}")
                                     except Exception:
                                         pass
                         except Exception as e:
