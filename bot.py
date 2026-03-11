@@ -351,6 +351,31 @@ def set_webhook():
     bot.remove_webhook()
     time.sleep(1)
     print(f"Webhook: {bot.set_webhook(url=f'{RENDER_URL}/webhook/{TOKEN}')}")
+    _set_bot_commands()
+
+def _set_bot_commands():
+    """Telegram '/' menüsündeki komut listesini günceller."""
+    commands = [
+        telebot.types.BotCommand("check",        "Tüm listeyi tara / tek hisse analiz"),
+        telebot.types.BotCommand("checksingle",  "Detaylı debug analizi"),
+        telebot.types.BotCommand("addall",        "BIST hisselerini ekle"),
+        telebot.types.BotCommand("refreshlist",  "Yahoo'dan güncel listeyi çek"),
+        telebot.types.BotCommand("add",          "Tek hisse ekle: /add THYAO"),
+        telebot.types.BotCommand("remove",       "Tek hisse çıkar: /remove THYAO"),
+        telebot.types.BotCommand("watchlist",    "İzleme listesini gör"),
+        telebot.types.BotCommand("optimize",     "Tek hisse EMA optimize"),
+        telebot.types.BotCommand("optimizeall",  "Tüm listeyi optimize et"),
+        telebot.types.BotCommand("backup",       "Veriyi JSON olarak yedekle"),
+        telebot.types.BotCommand("loadbackup",   "JSON yedekten geri yükle"),
+        telebot.types.BotCommand("status",       "Bot sağlık durumu"),
+        telebot.types.BotCommand("iptal",        "İşlemi durdur: /iptal check"),
+        telebot.types.BotCommand("help",         "Tüm komutları göster"),
+    ]
+    try:
+        bot.set_my_commands(commands)
+        print("Bot komut listesi güncellendi.")
+    except Exception as e:
+        print(f"Komut listesi güncellenemedi: {e}")
 
 def keep_alive():
     if not RENDER_URL:
