@@ -46,54 +46,98 @@ TD_DELAY = 1.5   # saniye – Yahoo Finance için yeterli
 
 # ~550 hisse – Borsa İstanbul Pay Piyasası tam liste (2025)
 _BIST_RAW = [
-    "ACSEL","ADEL","ADANA","AEFES","AGESA","AGROT","AHGAZ","AGHOL","AKENR","AKBNK",
-    "AKFGY","AKFIN","AKGRT","AKMGY","AKPAZ","AKSEN","AKSGY","AKSUE","AKTIF","AKYHO",
-    "ALARK","ALBRK","ALCAR","ALCTL","ALFAS","ALGYO","ALKIM","ALKLC","ALMAD","ALNTF",
-    "ALPAY","ALTES","ALVES","AMBRA","AMTEK","ANACM","ANELE","ANGEN","ANHYT","ANSGR",
-    "ANTKS","ARASE","ARCLK","ARFYO","ARSAN","ARTMS","ARZUM","ASCEL","ASGYO","ASELS",
-    "ASKLR","ASPILSAN","ASRNC","ASTOR","ATAGY","ATATP","ATEKS","ATLAS","ATPET","AVGYO",
-    "AVHOL","AVOD","AVTUR","AYCES","AYDEM","AYEN","AYNES","AYGAZ","AZTEK","BAGFS",
-    "BAKAB","BAKLK","BALAT","BALSU","BANBO","BANVT","BARMA","BASCM","BASGZ","BATISOKE",
-    "BAYRK","BERA","BEYAZ","BFREN","BIMAS","BIOEN","BIRTO","BJKAS","BKFIN","BLCYT",
-    "BMELK","BMSTL","BNTAS","BOSSA","BOYP","BOZK","BRLSM","BRISA","BRKSN","BRSAN",
-    "BRSHP","BRYAT","BRYYH","BSOKE","BTCIM","BUCIM","BURCE","BURVA","BVSAN","BYDNR",
-    "BYME","BYNDR","CAFER","CANTE","CARFA","CARSA","CASA","CATES","CCOLA","CEMAS",
-    "CEMTS","CEPHE","CEREN","CGCAM","CGINR","CGMYO","CHEFS","CIMSA","CLEBI","COFOR",
-    "CRDFA","CRFSA","CRPCA","CUSAN","CVKMD","DAGHL","DARDL","DATNS","DENGE","DERI",
-    "DERHL","DERIM","DESA","DESAS","DESPC","DEVA","DGATE","DIRIT","DITAS","DMSAS",
-    "DNISI","DOBUR","DOGUB","DOHOL","DOKTA","DORAY","DORTS","DPENS","DRTST","DURDO",
-    "DYOBY","DZGYO","EAPRO","EBEBK","ECILC","ECZYT","EDIP","EGGUB","EGEEN","EGPRO",
-    "EGSER","EKGYO","EKIZ","EKOS","ELITE","EMKEL","EMNIS","EMPA","ENCTR","ENDL","ENKAI",
-    "EPLAS","EREGL","ERSU","ESCOM","ESEN","ESKYP","ETYAT","EUHOL","EYGYO","EZRMK",
-    "FADE","FENER","FMIZP","FONET","FORTE","FRIGO","FROTO","FZLGY","GARAN","GARFA",
-    "GEDIK","GEDZA","GENIL","GENTS","GEREL","GESAN","GIMAT","GLBMD","GLRYH","GLYHO",
-    "GMTAS","GNDUZ","GOKNR","GOLDS","GOLTS","GOODY","GRSEL","GRTRK","GSDDE","GSDHO",
-    "GSRAY","GUBRF","GWIND","GZNMI","HALKB","HATEK","HEDEF","HEKTS","HKTM","HLGYO",
-    "HOROZ","HRKET","HTTBT","HUBVC","HURGZ","HZNDR","IDEAS","IDGYO","IEYHO","IHEVA",
-    "IHGZT","IHLAS","IHLGM","IHYAY","IMASM","IMBAT","INDES","INFO","INGRM","INTEM",
-    "INVEO","IPEKE","ISATR","ISBIR","ISDMR","ISFIN","ISGSY","ISGYO","ISCTR","ISYAT",
-    "ITTFK","IZFAS","IZMDC","IZTAR","JANTS","KAPLM","KAREL","KARSN","KARTN","KATMR",
-    "KAYSE","KBORU","KCAER","KENT","KERVN","KERVT","KCHOL","KLKIM","KLMSN","KLNMA",
-    "KNFRT","KONKA","KONTR","KOPOL","KONYA","KORDS","KOZAA","KOZAL","KRDMA","KRDMB",
-    "KRDMD","KRONT","KRPLS","KRSAN","KSTUR","KTLEV","KUYAS","KZBGY","LIDER","LKMNH",
-    "LOGO","LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR","MEPET","MERCN",
-    "MERKO","METRO","MGROS","MIATK","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK",
-    "MRGYO","MRDIN","MRSHL","MSGYO","MTRKS","MZHLD","NATEN","NBORU","NETAS","NTGAZ",
-    "NTHOL","NUGYO","NUHCM","OBASE","ODAS","OFSYM","ONCSM","ORCAY","ORGE","ORMA",
-    "OSMEN","OSTIM","OTKAR","OYAKC","OYAYO","OZKGY","PAMEL","PAPIL","PARSN","PASEU",
-    "PCILT","PENGD","PENTA","PETKM","PETUN","PINSU","PKART","PLTUR","PNLSN","POLHO",
-    "POLTK","PRZMA","PSDTC","PGSUS","QNBFB","QNBFL","RAYSG","RCAST","RHEAG","RNPOL",
-    "RODRG","ROYAL","RUBNS","RYSAS","SAFKR","SAHOL","SAMAT","SANEL","SANFM","SANKO",
-    "SARKY","SASA","SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA",
-    "SEYKM","SILVR","SISE","SKBNK","SMART","SMILE","SNPAM","SODA","SOKM","SONME",
-    "SUWEN","TARKM","TATEN","TATGD","TAVHL","TBORG","TCELL","TDGYO","TEKTU","TGSAS",
-    "THYAO","TIRE","TKFEN","TMSN","TOASO","TPVST","TRCAS","TRILC","TSGYO","TSKB",
-    "TSPOR","TTKOM","TUCLK","TUPRS","TUREX","TURGG","TURSG","TUYAP","ULUFA","ULUUN",
-    "ULKER","UNLU","USAK","USDMR","UZERB","VAKBN","VAKFN","VAKKO","VANGD","VBTYZ",
-    "VESTL","VERUS","VKFYO","VKGYO","WNDYR","YAPRK","YKBNK","YATAS","YBTAS","YESIL",
-    "YEOTK","YGGYO","YGYO","YKSLN","YUNSA","YYAPI","ZEDUR","ZOREN","ZRGYO",
+    # ── A ──
+    "A1CAP","A1YEN","ACSEL","ADEL","ADANA","ADESE","ADGYO","AEFES","AFYON","AGESA",
+    "AGHOL","AGROT","AHGAZ","AHSGY","AKENR","AKBNK","AKCNS","AKFGY","AKFIN","AKFIS",
+    "AKFYE","AKGRT","AKHAN","AKMGY","AKPAZ","AKSA","AKSEN","AKSGY","AKSUE","AKTIF",
+    "AKYHO","ALARK","ALBRK","ALCAR","ALCTL","ALFAS","ALGYO","ALKA","ALKIM","ALKLC",
+    "ALMAD","ALNTF","ALPAY","ALTES","ALTIN","ALTNY","ALVES","AMBRA","AMTEK","ANACM",
+    "ANELE","ANGEN","ANHYT","ANSGR","ANTKS","ARASE","ARCLK","ARDYZ","ARENA","ARFYE",
+    "ARFYO","ARMGD","ARSAN","ARTMS","ARZUM","ASCEL","ASGYO","ASELS","ASKLR","ASPILSAN",
+    "ASRNC","ASTOR","ATAGY","ATAKP","ATATP","ATATR","ATEKS","ATLAS","ATPET","ATSYH",
+    "AVGYO","AVHOL","AVOD","AVPGY","AVTUR","AYCES","AYDEM","AYEN","AYNES","AYES",
+    "AYGAZ","AZTEK","ASUZU",
+    # ── B ──
+    "BAGFS","BAHKM","BAKAB","BAKLK","BALAT","BALSU","BANBO","BANVT","BARMA","BASCM",
+    "BASGZ","BATISOKE","BAYRK","BEGYO","BERA","BESLR","BESTE","BEYAZ","BFREN","BIMAS","BIOEN","BIRTO","BJKAS","BKFIN",
+    "BLCYT","BMELK","BMSTL","BNTAS","BOSSA","BOYP","BOZK","BRLSM","BRISA","BRKSN",
+    "BRSAN","BRSHP","BRYAT","BRYYH","BSOKE","BTCIM","BUCIM","BURCE","BURVA","BVSAN",
+    "BYDNR","BYME","BYNDR","BIGGS",
+    # ── C ──
+    "CAFER","CANTE","CARFA","CARSA","CASA","CATES","CCOLA","CEMAS","CEMTS","CEPHE",
+    "CEREN","CGCAM","CGINR","CGMYO","CHEFS","CIMSA","CLEBI","COFOR","CRDFA","CRFSA",
+    "CRPCA","CUSAN","CVKMD","CWENE",
+    # ── D ──
+    "DAGHL","DARDL","DATNS","DENGE","DERI","DERHL","DERIM","DESA","DESAS","DESPC",
+    "DEVA","DGATE","DIRIT","DITAS","DMSAS","DNISI","DOAS","DOBUR","DOGUB","DOHOL","DOKTA",
+    "DORAY","DORTS","DPENS","DRTST","DURDO","DYOBY","DZGYO",
+    # ── E ──
+    "EAPRO","EBEBK","ECILC","ECZYT","EDIP","EFOR","EGGUB","EGEEN","EGPRO","EGSER",
+    "EKGYO","EKIZ","EKOS","ELITE","EMKEL","EMNIS","EMPA","ENCTR","ENDL","ENERY",
+    "ENJSA","ENKAI","EPLAS","EREGL",
+    "ERSU","ESCOM","ESEN","ESKYP","ETYAT","EUHOL","EUPWR","EYGYO","EZRMK",
+    # ── F ──
+    "FADE","FENER","FLAP","FMIZP","FONET","FORTE","FRIGO","FROTO","FZLGY",
+    # ── G ──
+    "GARAN","GARFA","GBOOK","GEDIK","GEDZA","GENIL","GENTS","GEREL","GESAN","GIMAT",
+    "GLBMD","GLRYH","GLYHO","GMTAS","GNDUZ","GOKNR","GOLDS","GOLTS","GOODY","GRSEL",
+    "GRTRK","GRTHO","GSDDE","GSDHO","GSRAY","GUBRF","GWIND","GZNMI",
+    # ── H ──
+    "HALKB","HATEK","HEDEF","HEKTS","HKTM","HLGYO","HOROZ","HRKET","HTTBT","HUBVC",
+    "HURGZ","HZNDR",
+    # ── I ──
+    "ICBCT","IDEAS","IDGYO","IEYHO","IHEVA","IHGZT","IHLAS","IHLGM","IHYAY","IMASM",
+    "IMBAT","INDES","INFO","INGRM","INTEM","INVEO","IPEKE","ISATR","ISBIR","ISDMR",
+    "ISFIN","ISGSY","ISGYO","ISCTR","ISMEN","ISYAT","ITTFK","IZFAS","IZMDC","IZTAR",
+    # ── J ──
+    "JANTS",
+    # ── K ──
+    "KAPLM","KAREL","KARSN","KARTN","KATMR","KAYSE","KBORU","KCAER","KENT","KERVN",
+    "KERVT","KCHOL","KIMMR","KLKIM","KLMSN","KLNMA","KNFRT","KONKA","KONTR","KOPOL",
+    "KONYA","KORDS","KOZAA","KOZAL","KRDMA","KRDMB","KRDMD","KRONT","KRPLS","KRSAN",
+    "KSTUR","KTLEV","KUYAS","KZBGY",
+    # ── L ──
+    "LIDER","LIDFA","LKMNH","LMKDC","LOGO","LUKSK",
+    # ── M ──
+    "MACKO","MAGEN","MAKIM","MANAS","MARTI","MAVI","MEDTR","MEPET","MERCN","MERKO",
+    "METRO","METUR","MGROS","MIATK","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK",
+    "MRGYO","MRDIN","MRSHL","MSGYO","MTRKS","MZHLD",
+    # ── N ──
+    "NATEN","NBORU","NETAS","NTGAZ","NTHOL","NTTUR","NUGYO","NUHCM",
+    # ── O ──
+    "OBAMS","OBASE","ODAS","ODEAB","OFSYM","ONCSM","ORCAY","ORGE","ORMA","OSMEN","OSTIM",
+    "OTKAR","OTTO","OYAKC","OYAYO","OZKGY",
+    # ── P ──
+    "PAMEL","PAPIL","PARSN","PASEU","PCILT","PEKGY","PENGD","PENTA","PETKM","PETUN",
+    "PGSUS","PINSU","PKART","PLTUR","PNLSN","POLHO","POLTK","PRZMA","PSDTC",
+    # ── Q ──
+    "QNBFB","QNBFL",
+    # ── R ──
+    "RALYH","RAYSG","RCAST","REEDR","RHEAG","RNPOL","RODRG","ROYAL","RUBNS","RYGYO",
+    "RYSAS",
+    # ── S ──
+    "SAFKR","SAHOL","SAMAT","SANEL","SANFM","SANKO","SARKY","SASA","SAYAS","SDTTR",
+    "SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM","SILVR","SISE","SKBNK",
+    "SMART","SMRTG","SMILE","SNPAM","SODA","SOKM","SONME","SUWEN",
+    # ── T ──
+    "TABGD","TARKM","TATEN","TATGD","TAVHL","TBORG","TCELL","TDGYO","TEDU","TEKTU",
+    "TEZOL","TFAC","TGSAS","THYAO","TIRE","TKFEN","TMSN","TOASO","TPVST","TRALT",
+    "TRCAS","TRENJ","TRMET","TRILC","TSGYO","TSKB","TSPOR","TTKOM","TTRAK","TUCLK",
+    "TUPRS","TUREX","TURGG","TURSG","TUYAP",
+    # ── U ──
+    "UCAK","ULKER","ULAS","ULUSE","ULUFA","ULUUN","UNLU","USAK","USDMR","UZERB",
+    # ── V ──
+    "VAKBN","VAKFN","VAKKO","VANGD","VBTYZ","VESTL","VERUS","VERTU","VKFYO","VKGYO",
+    # ── W ──
+    "WISD","WNDYR",
+    # ── Y ──
+    "YAPRK","YKBNK","YATAS","YBTAS","YESIL","YEOTK","YGGYO","YGYO","YKSLN","YUNSA",
+    "YYAPI",
+    # ── Z ──
+    "ZEDUR","ZOREN","ZRGYO",
 ]
 BIST_FALLBACK = sorted(list(set(_BIST_RAW)))
+
 
 
 
@@ -333,6 +377,128 @@ def calc_rsi(series, length=14):
 def calc_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
 
+def calc_volume_momentum(df, vol_period=20, mom_period_fast=5, mom_period_slow=10):
+    """
+    Hacim ve momentum analizi.
+
+    Döner dict:
+      vol_ratio     : son bar hacmi / 20 bar ortalama hacim
+      vol_trend     : 'YUKARI' | 'ASAGI' | 'NOTR'  (son 5 barın hacim eğilimi)
+      buy_pressure  : son 10 barda yükselen günlerin hacim oranı (0-1)
+      mom_fast      : 5 günlük fiyat değişim % (ROC)
+      mom_slow      : 10 günlük fiyat değişim % (ROC)
+      obv_trend     : 'YUKARI' | 'ASAGI' | 'NOTR'  (OBV eğilimi)
+      confirm_buy   : True/False  (AL sinyalini destekliyor mu?)
+      confirm_sell  : True/False  (SAT sinyalini destekliyor mu?)
+      summary       : okunabilir metin
+    """
+    result = {
+        "vol_ratio": None, "vol_trend": "NOTR",
+        "buy_pressure": None, "mom_fast": None, "mom_slow": None,
+        "obv_trend": "NOTR", "confirm_buy": False, "confirm_sell": False,
+        "summary": "❓ Hacim verisi yok"
+    }
+    try:
+        if "Volume" not in df.columns or len(df) < vol_period + 2:
+            return result
+
+        close  = df["Close"]
+        volume = df["Volume"].replace(0, np.nan)
+
+        # ── Hacim oranı ──────────────────────────────
+        avg_vol   = volume.iloc[-(vol_period+1):-1].mean()
+        last_vol  = volume.iloc[-1]
+        vol_ratio = last_vol / avg_vol if (avg_vol and avg_vol > 0) else None
+        result["vol_ratio"] = vol_ratio
+
+        # ── Hacim trendi (son 5 bar lineer regresyon eğimi) ──
+        recent_vol = volume.dropna().iloc[-5:]
+        if len(recent_vol) >= 3:
+            x = np.arange(len(recent_vol))
+            slope = np.polyfit(x, recent_vol.values, 1)[0]
+            norm  = recent_vol.mean()
+            if norm > 0:
+                slope_pct = slope / norm * 100
+                if slope_pct > 5:
+                    result["vol_trend"] = "YUKARI"
+                elif slope_pct < -5:
+                    result["vol_trend"] = "ASAGI"
+
+        # ── Alım/Satım baskısı (son 10 barda yukarı kapanan günlerin hacim ağırlığı) ──
+        last10 = df.iloc[-10:].copy()
+        last10["up"] = last10["Close"] > last10["Close"].shift(1)
+        up_vol   = last10.loc[last10["up"], "Volume"].sum()
+        down_vol = last10.loc[~last10["up"], "Volume"].sum()
+        total_vol = up_vol + down_vol
+        if total_vol > 0:
+            result["buy_pressure"] = up_vol / total_vol
+
+        # ── Momentum (ROC) ──────────────────────────
+        if len(close) > mom_period_slow + 1:
+            mom_fast = (close.iloc[-1] / close.iloc[-mom_period_fast] - 1) * 100
+            mom_slow = (close.iloc[-1] / close.iloc[-mom_period_slow] - 1) * 100
+            result["mom_fast"] = round(mom_fast, 2)
+            result["mom_slow"] = round(mom_slow, 2)
+
+        # ── OBV trendi ──────────────────────────────
+        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+        obv_recent = obv.iloc[-10:]
+        if len(obv_recent) >= 5:
+            x = np.arange(len(obv_recent))
+            obv_slope = np.polyfit(x, obv_recent.values, 1)[0]
+            obv_mean  = abs(obv_recent.mean())
+            if obv_mean > 0:
+                obv_slope_pct = obv_slope / obv_mean * 100
+                if obv_slope_pct > 2:
+                    result["obv_trend"] = "YUKARI"
+                elif obv_slope_pct < -2:
+                    result["obv_trend"] = "ASAGI"
+
+        # ── Onay mantığı ──────────────────────────────
+        vr    = vol_ratio or 0
+        bp    = result["buy_pressure"] or 0.5
+        mf    = result["mom_fast"] or 0
+        ms    = result["mom_slow"] or 0
+        obv_t = result["obv_trend"]
+        v_t   = result["vol_trend"]
+
+        # AL onayı: hacim ortalama üstünde + alım baskısı > %55 + momentum pozitif + OBV yukarı
+        buy_score  = (
+            (1 if vr >= 1.2 else 0) +
+            (1 if bp >= 0.55 else 0) +
+            (1 if mf > 0 else 0) +
+            (1 if ms > 0 else 0) +
+            (1 if obv_t == "YUKARI" else 0)
+        )
+        # SAT onayı: hacim ortalama üstünde + satım baskısı > %55 + momentum negatif + OBV aşağı
+        sell_score = (
+            (1 if vr >= 1.2 else 0) +
+            (1 if bp <= 0.45 else 0) +
+            (1 if mf < 0 else 0) +
+            (1 if ms < 0 else 0) +
+            (1 if obv_t == "ASAGI" else 0)
+        )
+        result["confirm_buy"]  = buy_score  >= 3
+        result["confirm_sell"] = sell_score >= 3
+
+        # ── Özet metin ──────────────────────────────
+        vol_str = f"{vr:.1f}x ort" if vr else "?"
+        vol_icon = "🔥" if vr and vr >= 1.5 else ("📊" if vr and vr >= 0.8 else "🔇")
+        bp_str  = f"%{bp*100:.0f} alım" if result["buy_pressure"] is not None else "?"
+        mf_str  = f"{mf:+.1f}%" if result["mom_fast"] is not None else "?"
+        ms_str  = f"{ms:+.1f}%" if result["mom_slow"] is not None else "?"
+        obv_str = "📈OBV" if obv_t == "YUKARI" else ("📉OBV" if obv_t == "ASAGI" else "➡️OBV")
+
+        result["summary"] = (
+            f"{vol_icon} Hacim:{vol_str} | {bp_str} | "
+            f"Mom:{mf_str}(5g)/{ms_str}(10g) | {obv_str}"
+        )
+
+    except Exception as e:
+        result["summary"] = f"❓ Hacim/momentum hata: {e}"
+
+    return result
+
 def detect_divergence(df, window=60, min_bars=5, max_bars=40):
     """
     RSI Pozitif (Bullish) ve Negatif (Bearish) uyumsuzluk tespiti.
@@ -439,27 +605,27 @@ def detect_divergence(df, window=60, min_bars=5, max_bars=40):
 # ═══════════════════════════════════════════════
 def fetch_bist_tickers_yahoo():
     """
-    Yahoo Finance search API'si üzerinden A-Z harflerine göre
-    BIST hisselerini çeker. Screener yerine arama kullanır — daha güvenilir.
+    Yahoo Finance query1 + toplu quote doğrulama.
+    Render IP'leri screener'ı bloklasa da quote endpoint'i genellikle çalışır.
     """
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "application/json",
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8",
         "Referer": "https://finance.yahoo.com/",
     }
     results = set()
 
-    # Yöntem 1: Harf harf arama
-    letters = "ABCDEFGHIJKLMNOPQRSTUVWYZ"
+    # ── Yöntem 1: query1 + .IS suffix araması ──
+    letters = "ABCDEFGHIJKLMNOPRSTUVYZ"
     for letter in letters:
         try:
             url = (
-                f"https://query2.finance.yahoo.com/v1/finance/search"
-                f"?q={letter}&lang=en-US&region=TR"
-                f"&quotesCount=20&newsCount=0&listsCount=0"
-                f"&exchange=BIST"
+                f"https://query1.finance.yahoo.com/v1/finance/search"
+                f"?q={letter}.IS&lang=en-US&region=TR"
+                f"&quotesCount=20&newsCount=0&enableFuzzyQuery=false"
             )
-            resp = requests.get(url, headers=headers, timeout=10)
+            resp = requests.get(url, headers=headers, timeout=8)
             if resp.status_code == 200:
                 quotes = resp.json().get("quotes", [])
                 batch = [
@@ -469,23 +635,31 @@ def fetch_bist_tickers_yahoo():
                     and q.get("quoteType") == "EQUITY"
                 ]
                 results.update(batch)
-            time.sleep(0.3)
-        except Exception as e:
-            print(f"Yahoo arama hata ({letter}): {e}")
-            continue
-
-    # Yöntem 2: Bilinen endeks bileşenlerini doğrula
-    # XU100 ve XU030 bileşenlerini çek
-    for index_sym in ["%5EXUALL.IS", "%5EXU100.IS", "%5EXU050.IS"]:
-        try:
-            url2 = (
-                f"https://query2.finance.yahoo.com/v8/finance/chart/{index_sym}"
-                f"?interval=1d&range=1d"
-            )
-            resp2 = requests.get(url2, headers=headers, timeout=10)
-            # Endeks verisi geliyorsa API çalışıyor demektir
         except Exception:
             pass
+        time.sleep(0.2)
+
+    # ── Yöntem 2: Toplu quote doğrulama (en güvenilir yöntem) ──
+    # Tüm bilinen listeyi 50'şer gruplarla sorgular — çalışanları onaylar
+    try:
+        chunk_size = 50
+        all_known = sorted(list(set(list(results) + BIST_FALLBACK)))
+        for i in range(0, len(all_known), chunk_size):
+            chunk   = all_known[i:i+chunk_size]
+            symbols = ",".join([f"{t}.IS" for t in chunk])
+            url2    = (
+                f"https://query1.finance.yahoo.com/v7/finance/quote"
+                f"?symbols={symbols}&lang=en-US&region=TR"
+            )
+            resp2 = requests.get(url2, headers=headers, timeout=12)
+            if resp2.status_code == 200:
+                qr = resp2.json().get("quoteResponse", {}).get("result", [])
+                batch = [q["symbol"].replace(".IS", "") for q in qr
+                         if q.get("symbol", "").endswith(".IS")]
+                results.update(batch)
+            time.sleep(0.3)
+    except Exception as e:
+        print(f"Yahoo quote bulk hata: {e}")
 
     return sorted(results)
 
@@ -518,7 +692,11 @@ def _run_refreshlist(chat_id):
     """
     bot.send_message(chat_id,
         "🔄 *Liste Yenileniyor...*\n"
-        "Yahoo Finance A-Z arama yapılıyor (~25 saniye)..."
+        "3 farklı kaynak deneniyor:\n"
+        "1️⃣ Yahoo Finance query1\n"
+        "2️⃣ Yahoo Finance toplu quote\n"
+        "3️⃣ KAP API\n"
+        "⏱ ~30-45 saniye sürebilir..."
     )
     try:
         live = fetch_bist_tickers_yahoo()
@@ -901,11 +1079,17 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
                     signals.append(f"[HAFTALIK] {dm_w}")
 
             # ══════════════════════════════
+            # HACİM & MOMENTUM ANALİZİ
+            # ══════════════════════════════
+            vm = {}
+            if has_daily:
+                vm = calc_volume_momentum(df_d)
+
+            # ══════════════════════════════
             # GÖSTER / GİZLE KOŞULU
             # ══════════════════════════════
             rsi_extreme = any("ASIRI" in r for r in rsi_lines)
             has_signal  = bool(signals)
-            # Tek hisse sorgusunda (checksingle/check THYAO) her zaman göster
             force_show  = ticker_list is not None
 
             show = has_signal or rsi_extreme or force_show
@@ -913,9 +1097,64 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
             if show:
                 vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
                 msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else ''}".strip()]
-                if signals:
-                    msg_lines += signals
+
+                # Sinyallere hacim/momentum onayı ekle
+                enriched_signals = []
+                for sig in signals:
+                    is_buy  = any(k in sig for k in ["AL","YUKARI","POZİTİF"])
+                    is_sell = any(k in sig for k in ["SAT","AŞAĞI","NEGATİF"])
+                    if vm and is_buy:
+                        if vm.get("confirm_buy"):
+                            sig += "\n   ✅ Hacim & Momentum DESTEKLEYOR"
+                        else:
+                            warnings = []
+                            vr = vm.get("vol_ratio")
+                            bp = vm.get("buy_pressure")
+                            mf = vm.get("mom_fast")
+                            obv = vm.get("obv_trend")
+                            if vr is not None and vr < 0.8:
+                                warnings.append("hacim düşük")
+                            if bp is not None and bp < 0.5:
+                                warnings.append("satım baskısı var")
+                            if mf is not None and mf < 0:
+                                warnings.append(f"momentum negatif ({mf:+.1f}%)")
+                            if obv == "ASAGI":
+                                warnings.append("OBV aşağı")
+                            if warnings:
+                                sig += f"\n   ⚠️ Zayıf: {', '.join(warnings)}"
+                            else:
+                                sig += "\n   🔶 Hacim/Momentum nötr"
+                    elif vm and is_sell:
+                        if vm.get("confirm_sell"):
+                            sig += "\n   ✅ Hacim & Momentum DESTEKLEYOR"
+                        else:
+                            warnings = []
+                            vr = vm.get("vol_ratio")
+                            bp = vm.get("buy_pressure")
+                            mf = vm.get("mom_fast")
+                            obv = vm.get("obv_trend")
+                            if vr is not None and vr < 0.8:
+                                warnings.append("hacim düşük")
+                            if bp is not None and bp > 0.5:
+                                warnings.append("alım baskısı hâlâ var")
+                            if mf is not None and mf > 0:
+                                warnings.append(f"momentum pozitif ({mf:+.1f}%)")
+                            if obv == "YUKARI":
+                                warnings.append("OBV yukarı")
+                            if warnings:
+                                sig += f"\n   ⚠️ Zayıf: {', '.join(warnings)}"
+                            else:
+                                sig += "\n   🔶 Hacim/Momentum nötr"
+                    enriched_signals.append(sig)
+
+                if enriched_signals:
+                    msg_lines += enriched_signals
                 msg_lines += rsi_lines
+
+                # Hacim/momentum özet satırı
+                if vm and vm.get("summary"):
+                    msg_lines.append(vm["summary"])
+
                 msg_lines.append(f"📐 EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
                 msg_lines.append(f"📈 [TradingView — {ticker}](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})")
                 messages.append("\n".join(msg_lines))
