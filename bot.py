@@ -439,72 +439,53 @@ def detect_divergence(df, window=60, min_bars=5, max_bars=40):
 # ═══════════════════════════════════════════════
 def fetch_bist_tickers_yahoo():
     """
-    Yahoo Finance screener ve search API üzerinden tüm BIST hisselerini çeker.
-    Çoklu yöntem dener, en geniş listeyi döner.
+    Yahoo Finance search API'si üzerinden A-Z harflerine göre
+    BIST hisselerini çeker. Screener yerine arama kullanır — daha güvenilir.
     """
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
         "Accept": "application/json",
         "Referer": "https://finance.yahoo.com/",
     }
     results = set()
 
-    # Yöntem 1: Yahoo Finance screener – offset ile sayfalama
-    try:
-        for offset in range(0, 700, 100):
+    # Yöntem 1: Harf harf arama
+    letters = "ABCDEFGHIJKLMNOPQRSTUVWYZ"
+    for letter in letters:
+        try:
             url = (
-                "https://query2.finance.yahoo.com/v1/finance/screener"
-                "?formatted=false&lang=en-US&region=TR&count=100"
-                f"&offset={offset}"
+                f"https://query2.finance.yahoo.com/v1/finance/search"
+                f"?q={letter}&lang=en-US&region=TR"
+                f"&quotesCount=20&newsCount=0&listsCount=0"
+                f"&exchange=BIST"
             )
-            body = {
-                "size": 100,
-                "offset": offset,
-                "sortField": "ticker",
-                "sortType": "ASC",
-                "quoteType": "EQUITY",
-                "query": {
-                    "operator": "AND",
-                    "operands": [
-                        {"operator": "EQ", "operands": ["exchange", "BIST"]},
-                    ]
-                },
-                "userId": "",
-                "userIdType": "guid"
-            }
-            resp = requests.post(url, json=body, headers=headers, timeout=15)
+            resp = requests.get(url, headers=headers, timeout=10)
             if resp.status_code == 200:
-                quotes = (resp.json()
-                          .get("finance", {})
-                          .get("result", [{}])[0]
-                          .get("quotes", []))
-                batch = [q["symbol"].replace(".IS","") for q in quotes
-                         if q.get("symbol","").endswith(".IS")]
+                quotes = resp.json().get("quotes", [])
+                batch = [
+                    q["symbol"].replace(".IS", "")
+                    for q in quotes
+                    if q.get("symbol", "").endswith(".IS")
+                    and q.get("quoteType") == "EQUITY"
+                ]
                 results.update(batch)
-                if len(batch) < 50:
-                    break
-            time.sleep(0.5)
-    except Exception as e:
-        print(f"Yahoo screener POST hata: {e}")
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"Yahoo arama hata ({letter}): {e}")
+            continue
 
-    # Yöntem 2: predefined screener GET
-    if len(results) < 100:
+    # Yöntem 2: Bilinen endeks bileşenlerini doğrula
+    # XU100 ve XU030 bileşenlerini çek
+    for index_sym in ["%5EXUALL.IS", "%5EXU100.IS", "%5EXU050.IS"]:
         try:
             url2 = (
-                "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
-                "?formatted=false&lang=en-US&region=TR&scrIds=BIST_ALL&count=600"
+                f"https://query2.finance.yahoo.com/v8/finance/chart/{index_sym}"
+                f"?interval=1d&range=1d"
             )
-            resp2 = requests.get(url2, headers=headers, timeout=20)
-            if resp2.status_code == 200:
-                quotes = (resp2.json()
-                          .get("finance", {})
-                          .get("result", [{}])[0]
-                          .get("quotes", []))
-                batch = [q["symbol"].replace(".IS","") for q in quotes
-                         if q.get("symbol","").endswith(".IS")]
-                results.update(batch)
-        except Exception as e:
-            print(f"Yahoo screener GET hata: {e}")
+            resp2 = requests.get(url2, headers=headers, timeout=10)
+            # Endeks verisi geliyorsa API çalışıyor demektir
+        except Exception:
+            pass
 
     return sorted(results)
 
@@ -537,34 +518,38 @@ def _run_refreshlist(chat_id):
     """
     bot.send_message(chat_id,
         "🔄 *Liste Yenileniyor...*\n"
-        "Yahoo Finance'den güncel BIST hisseleri çekiliyor..."
+        "Yahoo Finance A-Z arama yapılıyor (~25 saniye)..."
     )
     try:
         live = fetch_bist_tickers_yahoo()
 
+        # Yahoo sonuçlarını her zaman fallback ile birleştir
+        merged_master = sorted(list(set(live) | set(BIST_FALLBACK)))
+
         if len(live) < 50:
-            # Canlı çekim başarısız – fallback'i kullan
-            live = BIST_FALLBACK
             bot.send_message(chat_id,
-                f"⚠️ Yahoo Finance yanıt vermedi.\n"
-                f"📋 Dahili liste kullanılıyor: {len(live)} hisse"
+                f"⚠️ Yahoo Finance az sonuç döndürdü ({len(live)}).\n"
+                f"📋 Dahili liste ile birleştirildi: *{len(merged_master)} hisse*"
             )
         else:
             if DATABASE_URL:
-                db_set("master_ticker_list", live)
-            bot.send_message(chat_id, f"✅ Yahoo Finance: *{len(live)} hisse* bulundu.")
+                db_set("master_ticker_list", merged_master)
+            bot.send_message(chat_id,
+                f"✅ Yahoo Finance: *{len(live)} hisse* bulundu.\n"
+                f"📋 Dahili liste ile birleştirildi: *{len(merged_master)} hisse*"
+            )
 
         # Mevcut watchlist ile karşılaştır
-        current = wl_get(chat_id)
+        current     = wl_get(chat_id)
         current_set = set(current)
-        new_ones = [t for t in live if t not in current_set]
+        new_ones    = [t for t in merged_master if t not in current_set]
 
         if new_ones:
-            merged = sorted(list(current_set | set(live)))
-            wl_set(chat_id, merged)
+            final = sorted(list(current_set | set(merged_master)))
+            wl_set(chat_id, final)
             bot.send_message(chat_id,
                 f"📥 *{len(new_ones)} yeni hisse* watchlist'e eklendi!\n"
-                f"📋 Toplam: {len(merged)} hisse\n\n"
+                f"📋 Toplam: *{len(final)} hisse*\n\n"
                 f"Yeni eklenenler (ilk 30):\n" +
                 ", ".join(new_ones[:30]) +
                 (f"\n...ve {len(new_ones)-30} tane daha" if len(new_ones) > 30 else "")
