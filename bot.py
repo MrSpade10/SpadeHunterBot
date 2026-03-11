@@ -1304,7 +1304,11 @@ def send_welcome(message):
         "*── İptal ──*\n"
         "/iptal check — Taramayı durdur\n"
         "/iptal optimize — Tek optimize durdur\n"
-        "/iptal optimizeall — Toplu optimize durdur"
+        "/iptal optimizeall — Toplu optimize durdur\n\n"
+        "*── Yedek / Geri Yükleme ──*\n"
+        "/backup — Tüm veriyi JSON olarak yedekle 💾\n"
+        "/loadbackup — JSON yedekten geri yükle 📂\n"
+        "/status — Bot sağlık durumu"
     )
 
 @bot.message_handler(commands=['iptal'])
@@ -1343,6 +1347,150 @@ def add_all(message):
 def refreshlist(message):
     chat_id = str(message.chat.id)
     threading.Thread(target=_run_refreshlist, args=(chat_id,), daemon=True).start()
+
+
+@bot.message_handler(commands=['backup'])
+def backup(message):
+    """Watchlist + EMA ayarlarını Telegram mesajı olarak gönderir."""
+    chat_id = str(message.chat.id)
+    try:
+        wl = wl_get(chat_id)
+        if not wl:
+            bot.reply_to(message, "📭 Yedeklenecek veri yok. Liste boş.")
+            return
+
+        # EMA ayarlarını topla
+        ema_data = {}
+        for ticker in wl:
+            ep = ema_get(ticker)
+            default = {"daily": [9,21], "weekly": [9,21]}
+            if ep != {"daily": (9,21), "weekly": (9,21)}:
+                ema_data[ticker] = {
+                    "daily":  list(ep["daily"]),
+                    "weekly": list(ep["weekly"]),
+                }
+
+        backup_payload = {
+            "version":    2,
+            "date":       datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d %H:%M'),
+            "chat_id":    chat_id,
+            "watchlist":  wl,
+            "ema_custom": ema_data,   # sadece varsayılandan farklı olanlar
+        }
+
+        payload_str = json.dumps(backup_payload, ensure_ascii=False)
+        bot.send_message(chat_id,
+            f"💾 *Yedek Oluşturuldu*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 Watchlist: {len(wl)} hisse\n"
+            f"⚙️ Özel EMA: {len(ema_data)} hisse\n"
+            f"🕐 Tarih: {backup_payload['date']}\n\n"
+            f"⬇️ *Yedek dosyası aşağıda gönderiliyor...*"
+        )
+
+        # JSON dosyası olarak gönder
+        import io
+        file_obj = io.BytesIO(payload_str.encode('utf-8'))
+        file_obj.name = f"bist_backup_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+        bot.send_document(
+            chat_id,
+            file_obj,
+            caption=f"📦 BIST Bot Yedek — {len(wl)} hisse\n"
+                    f"Geri yüklemek için bu dosyayı bota gönder ve /loadbackup yaz."
+        )
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ Yedek hatası: {e}")
+
+
+@bot.message_handler(commands=['loadbackup'])
+def loadbackup(message):
+    """Son gönderilen JSON dosyasından watchlist + EMA ayarlarını geri yükler."""
+    chat_id = str(message.chat.id)
+    # Eğer doğrudan komut gönderildiyse bilgi ver
+    if not message.reply_to_message:
+        bot.reply_to(message,
+            "📂 *Yedek Yükleme*\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣ /backup komutuyla aldığın JSON dosyasını bota gönder\n"
+            "2️⃣ Dosyayı gönderirken caption'a /loadbackup yaz\n\n"
+            "Veya: önce JSON dosyasını gönder, sonra o mesajı yanıtlayarak /loadbackup yaz."
+        )
+        return
+    _process_backup_file(message, chat_id)
+
+
+@bot.message_handler(content_types=['document'])
+def handle_document(message):
+    """Gönderilen JSON dosyasını otomatik tanı ve yedek yükleme öner."""
+    chat_id = str(message.chat.id)
+    try:
+        fname = message.document.file_name or ""
+        if fname.startswith("bist_backup") and fname.endswith(".json"):
+            bot.reply_to(message,
+                "📦 Yedek dosyası algılandı!\n"
+                "Yüklemek için bu mesajı yanıtla ve /loadbackup yaz.\n"
+                "Veya caption'a /loadbackup yaz."
+            )
+            # Caption'da /loadbackup varsa direkt yükle
+            if message.caption and "/loadbackup" in message.caption:
+                _process_backup_file(message, chat_id, doc_message=message)
+    except Exception:
+        pass
+
+
+def _process_backup_file(message, chat_id, doc_message=None):
+    """JSON yedek dosyasını işler ve veritabanına yükler."""
+    try:
+        # Dosyayı bul: reply veya direkt
+        target = doc_message or message.reply_to_message
+        if not target or not target.document:
+            bot.send_message(chat_id, "❌ Dosya bulunamadı. Lütfen JSON dosyasını mesaja ekle.")
+            return
+
+        bot.send_message(chat_id, "⏳ Yedek yükleniyor...")
+
+        file_info = bot.get_file(target.document.file_id)
+        downloaded = bot.download_file(file_info.file_path)
+        payload = json.loads(downloaded.decode('utf-8'))
+
+        version   = payload.get("version", 1)
+        watchlist = payload.get("watchlist", [])
+        ema_data  = payload.get("ema_custom", {})
+
+        if not watchlist:
+            bot.send_message(chat_id, "❌ Dosyada watchlist bulunamadı.")
+            return
+
+        # Watchlist yükle
+        wl_set(chat_id, watchlist)
+
+        # EMA ayarlarını yükle (sadece özelleştirilmiş olanlar)
+        ema_loaded = 0
+        for ticker, ep in ema_data.items():
+            try:
+                ema_set(ticker, {
+                    "daily":  tuple(ep.get("daily",  [9,21])),
+                    "weekly": tuple(ep.get("weekly", [9,21])),
+                })
+                ema_loaded += 1
+            except Exception:
+                pass
+
+        backup_date = payload.get("date", "bilinmiyor")
+        bot.send_message(chat_id,
+            f"✅ *Yedek Başarıyla Yüklendi!*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📋 Watchlist: {len(watchlist)} hisse\n"
+            f"⚙️ EMA ayarları: {ema_loaded} hisse\n"
+            f"🕐 Yedek tarihi: {backup_date}\n\n"
+            f"✅ Bot kullanıma hazır!"
+        )
+
+    except json.JSONDecodeError:
+        bot.send_message(chat_id, "❌ Geçersiz JSON dosyası.")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Yükleme hatası: {e}")
 
 
 @bot.message_handler(commands=['add'])
