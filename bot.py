@@ -363,6 +363,7 @@ def _set_bot_commands():
         telebot.types.BotCommand("add",          "Tek hisse ekle: /add THYAO"),
         telebot.types.BotCommand("remove",       "Tek hisse çıkar: /remove THYAO"),
         telebot.types.BotCommand("watchlist",    "İzleme listesini gör"),
+        telebot.types.BotCommand("sinyal",       "Bugünkü sinyaller: /sinyal al | /sinyal sat"),
         telebot.types.BotCommand("optimize",     "Tek hisse EMA optimize"),
         telebot.types.BotCommand("optimizeall",  "Tüm listeyi optimize et"),
         telebot.types.BotCommand("backup",       "Veriyi JSON olarak yedekle"),
@@ -1121,75 +1122,134 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
 
             if show:
                 vol = df_d["Close"].pct_change().std() * 100 if has_daily else 0
-                msg_lines = [f"{'🔥' if vol>2 else '📌'} *{ticker}* {'(Yüksek Vol)' if vol>2 else ''}".strip()]
+                today_str = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d %b %Y')
 
-                # Sinyallere hacim/momentum onayı ekle
-                enriched_signals = []
+                # ── Başlık ──
+                vol_tag = " 🔥 Yüksek Vol" if vol > 2 else ""
+                header = f"{'🔥' if vol>2 else '📌'} *{ticker}*{vol_tag} | {today_str}"
+
+                # ── Sinyallere hacim/momentum onayı ekle ──
+                buy_sigs  = []
+                sell_sigs = []
+                other_sigs = []
+
                 for sig in signals:
                     is_buy  = any(k in sig for k in ["AL","YUKARI","POZİTİF"])
                     is_sell = any(k in sig for k in ["SAT","AŞAĞI","NEGATİF"])
+
+                    # Onay satırını belirle
+                    onay = ""
                     if vm and is_buy:
                         if vm.get("confirm_buy"):
-                            sig += "\n   ✅ Hacim & Momentum DESTEKLEYOR"
+                            onay = "│  ✅ Hacim & Momentum Destekliyor"
                         else:
-                            warnings = []
-                            vr = vm.get("vol_ratio")
-                            bp = vm.get("buy_pressure")
-                            mf = vm.get("mom_fast")
-                            obv = vm.get("obv_trend")
-                            if vr is not None and vr < 0.8:
-                                warnings.append("hacim düşük")
-                            if bp is not None and bp < 0.5:
-                                warnings.append("satım baskısı var")
-                            if mf is not None and mf < 0:
-                                warnings.append(f"momentum negatif ({mf:+.1f}%)")
-                            if obv == "ASAGI":
-                                warnings.append("OBV aşağı")
-                            if warnings:
-                                sig += f"\n   ⚠️ Zayıf: {', '.join(warnings)}"
-                            else:
-                                sig += "\n   🔶 Hacim/Momentum nötr"
+                            warns = []
+                            if vm.get("vol_ratio") is not None and vm["vol_ratio"] < 0.8:
+                                warns.append("hacim düşük")
+                            if vm.get("buy_pressure") is not None and vm["buy_pressure"] < 0.5:
+                                warns.append("satım baskısı var")
+                            if vm.get("mom_fast") is not None and vm["mom_fast"] < 0:
+                                warns.append(f"momentum negatif ({vm['mom_fast']:+.1f}%)")
+                            if vm.get("obv_trend") == "ASAGI":
+                                warns.append("OBV aşağı")
+                            onay = f"│  ⚠️ Zayıf: {', '.join(warns)}" if warns else "│  🔶 Hacim/Momentum nötr"
                     elif vm and is_sell:
                         if vm.get("confirm_sell"):
-                            sig += "\n   ✅ Hacim & Momentum DESTEKLEYOR"
+                            onay = "│  ✅ Hacim & Momentum Destekliyor"
                         else:
-                            warnings = []
-                            vr = vm.get("vol_ratio")
-                            bp = vm.get("buy_pressure")
-                            mf = vm.get("mom_fast")
-                            obv = vm.get("obv_trend")
-                            if vr is not None and vr < 0.8:
-                                warnings.append("hacim düşük")
-                            if bp is not None and bp > 0.5:
-                                warnings.append("alım baskısı hâlâ var")
-                            if mf is not None and mf > 0:
-                                warnings.append(f"momentum pozitif ({mf:+.1f}%)")
-                            if obv == "YUKARI":
-                                warnings.append("OBV yukarı")
-                            if warnings:
-                                sig += f"\n   ⚠️ Zayıf: {', '.join(warnings)}"
-                            else:
-                                sig += "\n   🔶 Hacim/Momentum nötr"
-                    enriched_signals.append(sig)
+                            warns = []
+                            if vm.get("vol_ratio") is not None and vm["vol_ratio"] < 0.8:
+                                warns.append("hacim düşük")
+                            if vm.get("buy_pressure") is not None and vm["buy_pressure"] > 0.5:
+                                warns.append("alım baskısı hâlâ var")
+                            if vm.get("mom_fast") is not None and vm["mom_fast"] > 0:
+                                warns.append(f"momentum pozitif ({vm['mom_fast']:+.1f}%)")
+                            if vm.get("obv_trend") == "YUKARI":
+                                warns.append("OBV yukarı")
+                            onay = f"│  ⚠️ Zayıf: {', '.join(warns)}" if warns else "│  🔶 Hacim/Momentum nötr"
 
-                if enriched_signals:
-                    msg_lines += enriched_signals
-                msg_lines += rsi_lines
+                    entry = (sig, onay)
+                    if is_buy:
+                        buy_sigs.append(entry)
+                    elif is_sell:
+                        sell_sigs.append(entry)
+                    else:
+                        other_sigs.append(entry)
 
-                # Hacim/momentum özet satırı
-                if vm and vm.get("summary"):
-                    msg_lines.append(vm["summary"])
+                # ── Mesaj bloklarını oluştur ──
+                parts_msg = [header, ""]
 
-                msg_lines.append(f"📐 EMA G:{ep_d[0]}-{ep_d[1]} | H:{ep_w[0]}-{ep_w[1]}")
-                msg_lines.append(f"📈 [TradingView — {ticker}](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})")
-                messages.append("\n".join(msg_lines))
+                # Analiz (RSI)
+                if rsi_lines:
+                    parts_msg.append("📊 *ANALİZ*")
+                    for i, r in enumerate(rsi_lines):
+                        prefix = "└" if i == len(rsi_lines)-1 else "├"
+                        parts_msg.append(f"{prefix} {r}")
+                    parts_msg.append("")
+
+                # AL sinyalleri
+                if buy_sigs:
+                    parts_msg.append("🟢 *AL SİNYALLERİ*")
+                    for i, (sig, onay) in enumerate(buy_sigs):
+                        prefix = "└" if (i == len(buy_sigs)-1 and not onay) else "├"
+                        parts_msg.append(f"{prefix} {sig}")
+                        if onay:
+                            parts_msg.append(onay)
+                    parts_msg.append("")
+
+                # SAT sinyalleri
+                if sell_sigs:
+                    parts_msg.append("🔴 *SAT SİNYALLERİ*")
+                    for i, (sig, onay) in enumerate(sell_sigs):
+                        prefix = "└" if (i == len(sell_sigs)-1 and not onay) else "├"
+                        parts_msg.append(f"{prefix} {sig}")
+                        if onay:
+                            parts_msg.append(onay)
+                    parts_msg.append("")
+
+                # Diğer (diverjans vb)
+                if other_sigs:
+                    parts_msg.append("🔎 *DİĞER*")
+                    for i, (sig, onay) in enumerate(other_sigs):
+                        prefix = "└" if i == len(other_sigs)-1 else "├"
+                        parts_msg.append(f"{prefix} {sig}")
+                    parts_msg.append("")
+
+                parts_msg.append(f"📐 EMA → G:{ep_d[0]}\\-{ep_d[1]} | H:{ep_w[0]}\\-{ep_w[1]}")
+                parts_msg.append(f"📈 [TradingView](https://tr.tradingview.com/chart/?symbol=BIST:{ticker})")
+
+                final_msg = "\n".join(parts_msg)
+
+                # Sinyal tipini belirle
+                has_buy  = bool(buy_sigs)
+                has_sell = bool(sell_sigs)
+                sig_type = "KARISIK" if (has_buy and has_sell) else ("AL" if has_buy else ("SAT" if has_sell else "DIGER"))
+
+                # DB'ye kaydet (/sinyal al/sat için)
+                try:
+                    today_key = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d')
+                    db_set(f"sinyal:{today_key}:{ticker}", json.dumps({"msg": final_msg, "type": sig_type, "chat_id": chat_id}))
+                except Exception:
+                    pass
+
+                messages.append(final_msg)
 
         except Exception as e:
             print(f"Scan hata {ticker}: {e}")
             continue
 
+    # Her sinyali ayrı mesaj olarak gönder
     if messages:
-        send_long_message(chat_id, "\n\n".join(messages))
+        bot.send_message(chat_id, f"🔔 *{len(messages)} sinyal bulundu!* Ayrıntılar geliyor...", parse_mode='Markdown')
+        for msg in messages:
+            if is_cancelled(chat_id, "check"):
+                break
+            try:
+                bot.send_message(chat_id, msg, parse_mode='Markdown')
+                time.sleep(0.3)
+            except Exception as e:
+                print(f"Mesaj gönderme hatası: {e}")
+        bot.send_message(chat_id, f"✅ Tarama tamamlandı. {total} hisse tarandı, {len(messages)} sinyal.")
     else:
         bot.send_message(chat_id,
             f"✅ Tarama bitti. {total} hisse tarandı ({no_data} veri yok).\n"
@@ -1317,8 +1377,11 @@ def send_welcome(message):
         "/check THYAO — Tek hisse analiz\n"
         "/check 50 — Rastgele 50 hisse\n"
         "/checksingle THYAO — Detaylı debug çıktısı\n\n"
+        "*── Sinyaller ──*\n"
+        "/sinyal al — Bugünkü AL sinyalleri 🟢\n"
+        "/sinyal sat — Bugünkü SAT sinyalleri 🔴\n\n"
         "*── Liste Yönetimi ──*\n"
-        "/addall — BIST hisselerini ekle (460 hisse)\n"
+        "/addall — BIST hisselerini ekle (527 hisse)\n"
         "/refreshlist — Yahoo'dan güncel tam listeyi çek ve ekle ⭐\n"
         "/add THYAO — Tek hisse ekle\n"
         "/remove THYAO — Tek hisse çıkar\n"
@@ -1660,6 +1723,68 @@ def manual_check(message):
     except ValueError:
         bot.reply_to(message, "Kullanım:\n/check all — tümünü tara\n/check 50 — rastgele 50\n/check THYAO — tek hisse")
 
+
+@bot.message_handler(commands=['sinyal'])
+def sinyal_handler(message):
+    chat_id = str(message.chat.id)
+    parts = message.text.strip().split()
+
+    if len(parts) < 2 or parts[1].lower() not in ("al","sat"):
+        bot.reply_to(message,
+            "📋 Kullanım:\n"
+            "/sinyal al — bugünkü AL sinyalleri\n"
+            "/sinyal sat — bugünkü SAT sinyalleri"
+        )
+        return
+
+    filtre = parts[1].upper()  # "AL" veya "SAT"
+    today_key = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d')
+
+    # DB'den bugünkü sinyalleri çek
+    try:
+        prefix = f"sinyal:{today_key}:"
+        conn = db_connect()
+        if not conn:
+            bot.reply_to(message, "❌ DB bağlantısı kurulamadı."); return
+        with conn.cursor() as cur:
+            cur.execute("SELECT key, value FROM store WHERE key LIKE %s", (prefix + "%",))
+            rows = cur.fetchall()
+        conn.close()
+    except Exception as e:
+        bot.reply_to(message, f"❌ Hata: {e}"); return
+
+    bulunanlar = []
+    for key, val in rows:
+        try:
+            data = json.loads(val)
+            tip = data.get("type","")
+            if filtre == "AL" and tip in ("AL","KARISIK"):
+                bulunanlar.append(data["msg"])
+            elif filtre == "SAT" and tip in ("SAT","KARISIK"):
+                bulunanlar.append(data["msg"])
+        except Exception:
+            continue
+
+    if not bulunanlar:
+        emoji = "🟢" if filtre == "AL" else "🔴"
+        bot.reply_to(message,
+            f"{emoji} Bugün için *{filtre}* sinyali bulunamadı.\n"
+            f"💡 Önce /check all ile tarama yap.",
+            parse_mode='Markdown'
+        )
+        return
+
+    emoji = "🟢" if filtre == "AL" else "🔴"
+    bot.send_message(chat_id,
+        f"{emoji} *{len(bulunanlar)} {filtre} sinyali* bulundu — geliyor...",
+        parse_mode='Markdown'
+    )
+    for msg in bulunanlar:
+        try:
+            bot.send_message(chat_id, msg, parse_mode='Markdown')
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"Sinyal gönderme hatası: {e}")
 
 @bot.message_handler(commands=['watchlist'])
 def show_list(message):
