@@ -437,54 +437,146 @@ def detect_divergence(df, window=60, min_bars=5, max_bars=40):
 # ═══════════════════════════════════════════════
 # TwelveData – kredi sayacı farkında
 # ═══════════════════════════════════════════════
-def get_all_bist_tickers():
+def fetch_bist_tickers_yahoo():
     """
-    Yahoo Finance'den canlı BIST hisse listesini çeker.
-    Başarısız olursa ~550 hisselik BIST_FALLBACK listesine döner.
+    Yahoo Finance screener ve search API üzerinden tüm BIST hisselerini çeker.
+    Çoklu yöntem dener, en geniş listeyi döner.
     """
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+        "Referer": "https://finance.yahoo.com/",
+    }
+    results = set()
+
+    # Yöntem 1: Yahoo Finance screener – offset ile sayfalama
     try:
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "application/json",
-            "Referer": "https://finance.yahoo.com/",
-        }
-        # Yahoo Finance screener – Türkiye borsası tüm hisseler
-        url = (
-            "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
-            "?formatted=false&lang=en-US&region=TR&scrIds=BIST_ALL&count=600"
-        )
-        resp = requests.get(url, headers=headers, timeout=20)
-        if resp.status_code == 200:
-            data   = resp.json()
-            quotes = (data.get("finance", {})
+        for offset in range(0, 700, 100):
+            url = (
+                "https://query2.finance.yahoo.com/v1/finance/screener"
+                "?formatted=false&lang=en-US&region=TR&count=100"
+                f"&offset={offset}"
+            )
+            body = {
+                "size": 100,
+                "offset": offset,
+                "sortField": "ticker",
+                "sortType": "ASC",
+                "quoteType": "EQUITY",
+                "query": {
+                    "operator": "AND",
+                    "operands": [
+                        {"operator": "EQ", "operands": ["exchange", "BIST"]},
+                    ]
+                },
+                "userId": "",
+                "userIdType": "guid"
+            }
+            resp = requests.post(url, json=body, headers=headers, timeout=15)
+            if resp.status_code == 200:
+                quotes = (resp.json()
+                          .get("finance", {})
                           .get("result", [{}])[0]
                           .get("quotes", []))
-            tickers = [
-                q["symbol"].replace(".IS", "")
-                for q in quotes
-                if q.get("symbol", "").endswith(".IS")
-            ]
-            if len(tickers) > 100:
-                print(f"Yahoo screener: {len(tickers)} hisse alindi.")
-                return sorted(tickers)
+                batch = [q["symbol"].replace(".IS","") for q in quotes
+                         if q.get("symbol","").endswith(".IS")]
+                results.update(batch)
+                if len(batch) < 50:
+                    break
+            time.sleep(0.5)
     except Exception as e:
-        print(f"Yahoo screener hata: {e}")
+        print(f"Yahoo screener POST hata: {e}")
 
-    # Yedek: Yahoo Finance quote endpoint ile XU500 endeksi bileşenlerini çek
-    try:
-        headers = {
-            "User-Agent": "Mozilla/5.0",
-            "Referer": "https://finance.yahoo.com/",
-        }
-        url2 = "https://query2.finance.yahoo.com/v8/finance/chart/%5EXU500.IS?interval=1d&range=1d"
-        resp2 = requests.get(url2, headers=headers, timeout=15)
-        # XU500 bileşenlerini doğrudan çekemesek de en azından kontrol ediyoruz
-        # Eğer endpoint çalışıyorsa ilerleyen sürümlerde bileşen listesi eklenebilir
-    except Exception:
-        pass
+    # Yöntem 2: predefined screener GET
+    if len(results) < 100:
+        try:
+            url2 = (
+                "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
+                "?formatted=false&lang=en-US&region=TR&scrIds=BIST_ALL&count=600"
+            )
+            resp2 = requests.get(url2, headers=headers, timeout=20)
+            if resp2.status_code == 200:
+                quotes = (resp2.json()
+                          .get("finance", {})
+                          .get("result", [{}])[0]
+                          .get("quotes", []))
+                batch = [q["symbol"].replace(".IS","") for q in quotes
+                         if q.get("symbol","").endswith(".IS")]
+                results.update(batch)
+        except Exception as e:
+            print(f"Yahoo screener GET hata: {e}")
 
-    print(f"Fallback liste kullaniliyor: {len(BIST_FALLBACK)} hisse")
+    return sorted(results)
+
+
+def get_all_bist_tickers():
+    """
+    1. DB'de kayıtlı güncel liste varsa onu döner
+    2. Yoksa Yahoo Finance'den çekmeye çalışır
+    3. O da başarısızsa BIST_FALLBACK'e döner
+    """
+    # DB'den kayıtlı master liste var mı?
+    if DATABASE_URL:
+        saved = db_get("master_ticker_list")
+        if saved and isinstance(saved, list) and len(saved) > 100:
+            return saved
+
+    live = fetch_bist_tickers_yahoo()
+    if len(live) > 100:
+        if DATABASE_URL:
+            db_set("master_ticker_list", live)
+        return live
+
     return BIST_FALLBACK
+
+
+def _run_refreshlist(chat_id):
+    """
+    Yahoo Finance'den güncel BIST listesini çekip DB'ye kaydeder.
+    Mevcut watchlist'e eksik olanları ekler.
+    """
+    bot.send_message(chat_id,
+        "🔄 *Liste Yenileniyor...*\n"
+        "Yahoo Finance'den güncel BIST hisseleri çekiliyor..."
+    )
+    try:
+        live = fetch_bist_tickers_yahoo()
+
+        if len(live) < 50:
+            # Canlı çekim başarısız – fallback'i kullan
+            live = BIST_FALLBACK
+            bot.send_message(chat_id,
+                f"⚠️ Yahoo Finance yanıt vermedi.\n"
+                f"📋 Dahili liste kullanılıyor: {len(live)} hisse"
+            )
+        else:
+            if DATABASE_URL:
+                db_set("master_ticker_list", live)
+            bot.send_message(chat_id, f"✅ Yahoo Finance: *{len(live)} hisse* bulundu.")
+
+        # Mevcut watchlist ile karşılaştır
+        current = wl_get(chat_id)
+        current_set = set(current)
+        new_ones = [t for t in live if t not in current_set]
+
+        if new_ones:
+            merged = sorted(list(current_set | set(live)))
+            wl_set(chat_id, merged)
+            bot.send_message(chat_id,
+                f"📥 *{len(new_ones)} yeni hisse* watchlist'e eklendi!\n"
+                f"📋 Toplam: {len(merged)} hisse\n\n"
+                f"Yeni eklenenler (ilk 30):\n" +
+                ", ".join(new_ones[:30]) +
+                (f"\n...ve {len(new_ones)-30} tane daha" if len(new_ones) > 30 else "")
+            )
+        else:
+            bot.send_message(chat_id,
+                f"✅ Liste güncel! {len(current)} hisse zaten ekli, yeni hisse yok."
+            )
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ Hata: {e}")
+
 
 def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
     try:
@@ -977,7 +1069,8 @@ def send_welcome(message):
         "/check 50 — Rastgele 50 hisse\n"
         "/checksingle THYAO — Detaylı debug çıktısı\n\n"
         "*── Liste Yönetimi ──*\n"
-        "/addall — Tüm BIST hisselerini ekle\n"
+        "/addall — BIST hisselerini ekle (460 hisse)\n"
+        "/refreshlist — Yahoo'dan güncel tam listeyi çek ve ekle ⭐\n"
         "/add THYAO — Tek hisse ekle\n"
         "/remove THYAO — Tek hisse çıkar\n"
         "/watchlist — İzleme listeni gör\n\n"
@@ -1015,10 +1108,18 @@ def optimizeall(message):
 @bot.message_handler(commands=['addall'])
 def add_all(message):
     chat_id = str(message.chat.id)
-    bot.reply_to(message, "📋 Tüm BIST hisseleri listeye ekleniyor...")
+    bot.reply_to(message,
+        "📋 BIST hisseleri ekleniyor...\n"
+        "💡 Daha kapsamlı liste için /refreshlist komutunu dene!")
     tickers = get_all_bist_tickers()
     wl_set(chat_id, tickers)
     bot.send_message(chat_id, f"✅ {len(tickers)} hisse eklendi.")
+
+@bot.message_handler(commands=['refreshlist'])
+def refreshlist(message):
+    chat_id = str(message.chat.id)
+    threading.Thread(target=_run_refreshlist, args=(chat_id,), daemon=True).start()
+
 
 @bot.message_handler(commands=['add'])
 def add_ticker(message):
