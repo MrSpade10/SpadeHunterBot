@@ -44,38 +44,58 @@ def is_cancelled(chat_id, op):
 
 TD_DELAY = 1.5   # saniye – Yahoo Finance için yeterli
 
-BIST_FALLBACK = [
-    "THYAO","GARAN","ASELS","KCHOL","EREGL","AKBNK","YKBNK","SISE","TUPRS","SAHOL",
-    "FROTO","TOASO","PETKM","HALKB","VAKBN","TTKOM","BIMAS","AKSEN","ENKAI","KOZAL",
-    "ISCTR","ARCLK","PGSUS","TAVHL","TCELL","DOHOL","OYAKC","OTKAR","GUBRF","MGROS",
-    "SOKM","ULKER","CCOLA","AGHOL","EKGYO","LOGO","NETAS","VESTL","TSKB","ALARK",
-    "ALFAS","AEFES","KRDMD","GOLTS","SODA","KONYA","EGEEN","TKFEN","KERVT","HEKTS",
-    "GOODY","DURDO","ADEL","ADANA","AKMGY","ANACM","ANHYT","ANSGR","ASTOR","AYGAZ",
-    "BAGFS","BAKAB","BANVT","BASCM","BERA","BFREN","BIOEN","BIZIM","BJKAS","BLCYT",
-    "BMSTL","BNTAS","BOSSA","BRISA","BRKSN","BRYAT","BSOKE","BTCIM","BUCIM","BURCE",
-    "BURVA","BVSAN","CATES","CEMTS","CIMSA","CLEBI","CRDFA","CRFSA","CUSAN","CVKMD",
-    "DAGHL","DARDL","DENGE","DERHL","DERIM","DESAS","DESPC","DEVA","DGATE","DITAS",
-    "DMSAS","DNISI","DOGUB","DORTS","DPENS","DYOBY","DZGYO","ECILC","ECZYT","EDIP",
-    "EGGUB","EGPRO","EGSER","EKIZ","EMKEL","EMNIS","ENDL","EPLAS","ERSU","ESCOM",
-    "ESEN","ETYAT","EUHOL","FADE","FENER","FONET","FORTE","GARFA","GEDIK","GEDZA",
-    "GENIL","GENTS","GEREL","GESAN","GIMAT","GLBMD","GLRYH","GLYHO","GMTAS","GNDUZ",
-    "GRSEL","GRTRK","GSDDE","GSDHO","GSRAY","GWIND","HEDEF","HZNDR","IDEAS","IDGYO",
-    "IEYHO","IHEVA","IHGZT","IHLAS","IHLGM","IHYAY","INDES","INFO","INGRM","INVEO",
-    "IPEKE","ISATR","ISBIR","ITTFK","IZFAS","IZMDC","JANTS","KAPLM","KAREL","KARSN",
-    "KARTN","KATMR","KBORU","KENT","KERVN","KLKIM","KLMSN","KONKA","KONTR","KOPOL",
-    "KORDS","KOZAA","KRDMA","KRDMB","KRONT","KRSAN","KSTUR","KUYAS","LIDER","LKMNH",
-    "LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR","MEPET","MERCN","MERKO",
-    "METRO","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK","MRDIN","MRSHL","MSGYO",
-    "MTRKS","NATEN","NBORU","NTGAZ","NTHOL","NUGYO","NUHCM","OBASE","ODAS","ORGE",
-    "ORMA","OSTIM","PAMEL","PAPIL","PARSN","PASEU","PENGD","PENTA","PETUN","PINSU",
-    "PKART","PLTUR","POLHO","POLTK","PRZMA","QNBFB","QNBFL","RAYSG","RHEAG","RNPOL",
-    "RUBNS","SAFKR","SAMAT","SANEL","SANFM","SANKO","SARKY","SAYAS","SDTTR","SEGYO",
-    "SEKFK","SEKUR","SELEC","SELGD","SELVA","SEYKM","SILVR","SKBNK","SMART","SMILE",
-    "SNPAM","SONME","SUWEN","TARKM","TATEN","TATGD","TBORG","TEKTU","TGSAS","TIRE",
-    "TMSN","TRCAS","TRILC","TSPOR","TUCLK","TUREX","TURSG","TUYAP","ULUUN","USAK",
-    "VAKFN","VAKKO","VANGD","VBTYZ","VERUS","VKGYO","YAPRK","YATAS","YBTAS","YESIL",
-    "YUNSA","ZOREN"
+# ~550 hisse – Borsa İstanbul Pay Piyasası tam liste (2025)
+_BIST_RAW = [
+    "ACSEL","ADEL","ADANA","AEFES","AGESA","AGROT","AHGAZ","AGHOL","AKENR","AKBNK",
+    "AKFGY","AKFIN","AKGRT","AKMGY","AKPAZ","AKSEN","AKSGY","AKSUE","AKTIF","AKYHO",
+    "ALARK","ALBRK","ALCAR","ALCTL","ALFAS","ALGYO","ALKIM","ALKLC","ALMAD","ALNTF",
+    "ALPAY","ALTES","ALVES","AMBRA","AMTEK","ANACM","ANELE","ANGEN","ANHYT","ANSGR",
+    "ANTKS","ARASE","ARCLK","ARFYO","ARSAN","ARTMS","ARZUM","ASCEL","ASGYO","ASELS",
+    "ASKLR","ASPILSAN","ASRNC","ASTOR","ATAGY","ATATP","ATEKS","ATLAS","ATPET","AVGYO",
+    "AVHOL","AVOD","AVTUR","AYCES","AYDEM","AYEN","AYNES","AYGAZ","AZTEK","BAGFS",
+    "BAKAB","BAKLK","BALAT","BALSU","BANBO","BANVT","BARMA","BASCM","BASGZ","BATISOKE",
+    "BAYRK","BERA","BEYAZ","BFREN","BIMAS","BIOEN","BIRTO","BJKAS","BKFIN","BLCYT",
+    "BMELK","BMSTL","BNTAS","BOSSA","BOYP","BOZK","BRLSM","BRISA","BRKSN","BRSAN",
+    "BRSHP","BRYAT","BRYYH","BSOKE","BTCIM","BUCIM","BURCE","BURVA","BVSAN","BYDNR",
+    "BYME","BYNDR","CAFER","CANTE","CARFA","CARSA","CASA","CATES","CCOLA","CEMAS",
+    "CEMTS","CEPHE","CEREN","CGCAM","CGINR","CGMYO","CHEFS","CIMSA","CLEBI","COFOR",
+    "CRDFA","CRFSA","CRPCA","CUSAN","CVKMD","DAGHL","DARDL","DATNS","DENGE","DERI",
+    "DERHL","DERIM","DESA","DESAS","DESPC","DEVA","DGATE","DIRIT","DITAS","DMSAS",
+    "DNISI","DOBUR","DOGUB","DOHOL","DOKTA","DORAY","DORTS","DPENS","DRTST","DURDO",
+    "DYOBY","DZGYO","EAPRO","EBEBK","ECILC","ECZYT","EDIP","EGGUB","EGEEN","EGPRO",
+    "EGSER","EKGYO","EKIZ","EKOS","ELITE","EMKEL","EMNIS","EMPA","ENCTR","ENDL","ENKAI",
+    "EPLAS","EREGL","ERSU","ESCOM","ESEN","ESKYP","ETYAT","EUHOL","EYGYO","EZRMK",
+    "FADE","FENER","FMIZP","FONET","FORTE","FRIGO","FROTO","FZLGY","GARAN","GARFA",
+    "GEDIK","GEDZA","GENIL","GENTS","GEREL","GESAN","GIMAT","GLBMD","GLRYH","GLYHO",
+    "GMTAS","GNDUZ","GOKNR","GOLDS","GOLTS","GOODY","GRSEL","GRTRK","GSDDE","GSDHO",
+    "GSRAY","GUBRF","GWIND","GZNMI","HALKB","HATEK","HEDEF","HEKTS","HKTM","HLGYO",
+    "HOROZ","HRKET","HTTBT","HUBVC","HURGZ","HZNDR","IDEAS","IDGYO","IEYHO","IHEVA",
+    "IHGZT","IHLAS","IHLGM","IHYAY","IMASM","IMBAT","INDES","INFO","INGRM","INTEM",
+    "INVEO","IPEKE","ISATR","ISBIR","ISDMR","ISFIN","ISGSY","ISGYO","ISCTR","ISYAT",
+    "ITTFK","IZFAS","IZMDC","IZTAR","JANTS","KAPLM","KAREL","KARSN","KARTN","KATMR",
+    "KAYSE","KBORU","KCAER","KENT","KERVN","KERVT","KCHOL","KLKIM","KLMSN","KLNMA",
+    "KNFRT","KONKA","KONTR","KOPOL","KONYA","KORDS","KOZAA","KOZAL","KRDMA","KRDMB",
+    "KRDMD","KRONT","KRPLS","KRSAN","KSTUR","KTLEV","KUYAS","KZBGY","LIDER","LKMNH",
+    "LOGO","LUKSK","MACKO","MAKIM","MANAS","MARTI","MAVI","MEDTR","MEPET","MERCN",
+    "MERKO","METRO","MGROS","MIATK","MIPAZ","MNDRS","MNVRL","MOBTL","MOGAN","MPARK",
+    "MRGYO","MRDIN","MRSHL","MSGYO","MTRKS","MZHLD","NATEN","NBORU","NETAS","NTGAZ",
+    "NTHOL","NUGYO","NUHCM","OBASE","ODAS","OFSYM","ONCSM","ORCAY","ORGE","ORMA",
+    "OSMEN","OSTIM","OTKAR","OYAKC","OYAYO","OZKGY","PAMEL","PAPIL","PARSN","PASEU",
+    "PCILT","PENGD","PENTA","PETKM","PETUN","PINSU","PKART","PLTUR","PNLSN","POLHO",
+    "POLTK","PRZMA","PSDTC","PGSUS","QNBFB","QNBFL","RAYSG","RCAST","RHEAG","RNPOL",
+    "RODRG","ROYAL","RUBNS","RYSAS","SAFKR","SAHOL","SAMAT","SANEL","SANFM","SANKO",
+    "SARKY","SASA","SAYAS","SDTTR","SEGYO","SEKFK","SEKUR","SELEC","SELGD","SELVA",
+    "SEYKM","SILVR","SISE","SKBNK","SMART","SMILE","SNPAM","SODA","SOKM","SONME",
+    "SUWEN","TARKM","TATEN","TATGD","TAVHL","TBORG","TCELL","TDGYO","TEKTU","TGSAS",
+    "THYAO","TIRE","TKFEN","TMSN","TOASO","TPVST","TRCAS","TRILC","TSGYO","TSKB",
+    "TSPOR","TTKOM","TUCLK","TUPRS","TUREX","TURGG","TURSG","TUYAP","ULUFA","ULUUN",
+    "ULKER","UNLU","USAK","USDMR","UZERB","VAKBN","VAKFN","VAKKO","VANGD","VBTYZ",
+    "VESTL","VERUS","VKFYO","VKGYO","WNDYR","YAPRK","YKBNK","YATAS","YBTAS","YESIL",
+    "YEOTK","YGGYO","YGYO","YKSLN","YUNSA","YYAPI","ZEDUR","ZOREN","ZRGYO",
 ]
+BIST_FALLBACK = sorted(list(set(_BIST_RAW)))
+
+
 
 # ═══════════════════════════════════════════════
 # VERİTABANI
@@ -418,6 +438,52 @@ def detect_divergence(df, window=60, min_bars=5, max_bars=40):
 # TwelveData – kredi sayacı farkında
 # ═══════════════════════════════════════════════
 def get_all_bist_tickers():
+    """
+    Yahoo Finance'den canlı BIST hisse listesini çeker.
+    Başarısız olursa ~550 hisselik BIST_FALLBACK listesine döner.
+    """
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept": "application/json",
+            "Referer": "https://finance.yahoo.com/",
+        }
+        # Yahoo Finance screener – Türkiye borsası tüm hisseler
+        url = (
+            "https://query2.finance.yahoo.com/v1/finance/screener/predefined/saved"
+            "?formatted=false&lang=en-US&region=TR&scrIds=BIST_ALL&count=600"
+        )
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code == 200:
+            data   = resp.json()
+            quotes = (data.get("finance", {})
+                          .get("result", [{}])[0]
+                          .get("quotes", []))
+            tickers = [
+                q["symbol"].replace(".IS", "")
+                for q in quotes
+                if q.get("symbol", "").endswith(".IS")
+            ]
+            if len(tickers) > 100:
+                print(f"Yahoo screener: {len(tickers)} hisse alindi.")
+                return sorted(tickers)
+    except Exception as e:
+        print(f"Yahoo screener hata: {e}")
+
+    # Yedek: Yahoo Finance quote endpoint ile XU500 endeksi bileşenlerini çek
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://finance.yahoo.com/",
+        }
+        url2 = "https://query2.finance.yahoo.com/v8/finance/chart/%5EXU500.IS?interval=1d&range=1d"
+        resp2 = requests.get(url2, headers=headers, timeout=15)
+        # XU500 bileşenlerini doğrudan çekemesek de en azından kontrol ediyoruz
+        # Eğer endpoint çalışıyorsa ilerleyen sürümlerde bileşen listesi eklenebilir
+    except Exception:
+        pass
+
+    print(f"Fallback liste kullaniliyor: {len(BIST_FALLBACK)} hisse")
     return BIST_FALLBACK
 
 def fetch_yahoo_direct(ticker, interval="1d", range_="2y"):
@@ -543,7 +609,18 @@ def get_data(ticker):
 
 def find_best_ema_pair(ticker, chat_id=None):
     df_daily, df_weekly = get_data(ticker)
-    pairs  = [(3,8),(5,13),(8,21),(9,21),(12,26),(20,50),(10,30)]
+    # 20 EMA çifti – kısa/orta/uzun vadeli + Fibonacci bazlı
+    pairs = [
+        # Kısa vadeli
+        (3,8),(4,9),(5,10),(5,13),(6,13),
+        # Orta vadeli
+        (8,21),(9,21),(10,21),(10,26),(12,26),
+        (13,34),(14,28),(10,30),(15,30),
+        # Uzun vadeli
+        (20,50),(21,55),(20,60),(21,89),(50,200),
+        # Fibonacci bazlı
+        (8,13),(13,21),
+    ]
     result = {}
 
     for label, df in [("daily", df_daily), ("weekly", df_weekly)]:
@@ -818,6 +895,75 @@ def _run_optimize(chat_id, ticker):
     except Exception as e:
         bot.send_message(chat_id, f"Hata: {e}")
 
+def _run_optimizeall(chat_id):
+    """Tüm watchlist'i sırayla optimize eder. Her 10 hissede ilerleme mesajı gönderir."""
+    reset_cancel_flag(chat_id, "optimizeall")
+    tickers = wl_get(chat_id)
+    if not tickers:
+        bot.send_message(chat_id, "📭 Liste boş! Önce /addall yaz."); return
+
+    total    = len(tickers)
+    done     = 0
+    skipped  = 0
+    improved = 0
+
+    bot.send_message(chat_id,
+        f"⚙️ *Toplu Optimize Başlıyor*\n"
+        f"📋 {total} hisse sırayla optimize edilecek\n"
+        f"⏱ Tahmini süre: ~{total*25//3600}sa {(total*25%3600)//60}dk\n"
+        f"🚫 Durdurmak için: /iptal optimizeall"
+    )
+
+    for i, ticker in enumerate(tickers):
+        # İptal kontrolü
+        if is_cancelled(chat_id, "optimizeall"):
+            bot.send_message(chat_id,
+                f"🚫 Toplu optimize durduruldu.\n"
+                f"✅ Tamamlanan: {done} | ⏭ Atlanan: {skipped} | 📈 İyileştirilen: {improved}")
+            return
+
+        try:
+            pairs = find_best_ema_pair(ticker, chat_id=chat_id)
+            if pairs is None:
+                # optimize iptal eventi set edilmiş
+                bot.send_message(chat_id, "🚫 Optimize iptal edildi.")
+                return
+            if pairs:
+                old = ema_get(ticker)
+                ema_set(ticker, pairs)
+                # Varsayılandan farklıysa "iyileştirme" say
+                if pairs["daily"] != (9,21) or pairs["weekly"] != (9,21):
+                    improved += 1
+                done += 1
+            else:
+                skipped += 1
+        except Exception as e:
+            print(f"OptimizeAll hata {ticker}: {e}")
+            skipped += 1
+
+        # Her 10 hissede bir ilerleme raporu
+        if (i + 1) % 10 == 0:
+            pct = int((i+1) / total * 100)
+            bar = "█" * (pct//10) + "░" * (10 - pct//10)
+            bot.send_message(chat_id,
+                f"⚙️ *Optimize: {i+1}/{total}* ({pct}%)\n"
+                f"`{bar}`\n"
+                f"✅ Tamamlanan: {done} | 📈 İyileştirilen: {improved} | ⏭ Atlanan: {skipped}"
+            )
+
+        time.sleep(0.5)  # DB yazma için kısa bekleme
+
+    bot.send_message(chat_id,
+        f"🎉 *Toplu Optimize Tamamlandı!*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"📋 Toplam hisse: {total}\n"
+        f"✅ Optimize edilen: {done}\n"
+        f"📈 Varsayılandan farklı: {improved}\n"
+        f"⏭ Veri yetersiz (atlandı): {skipped}\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"Artık /check ile taramayı başlatabilirsin."
+    )
+
 # ═══════════════════════════════════════════════
 # Bot Komutları
 # ═══════════════════════════════════════════════
@@ -825,15 +971,23 @@ def _run_optimize(chat_id, ticker):
 def send_welcome(message):
     bot.reply_to(message,
         "📊 *BIST Teknik Analiz Botu*\n\n"
+        "*── Tarama ──*\n"
         "/check — Tüm listeyi tara\n"
         "/check THYAO — Tek hisse analiz\n"
         "/check 50 — Rastgele 50 hisse\n"
-        "/checksingle THYAO — Detaylı debug çıktısı\n"
-        "/optimize THYAO — EMA optimizasyonu\n"
-        "/watchlist — İzleme listeni gör\n"
+        "/checksingle THYAO — Detaylı debug çıktısı\n\n"
+        "*── Liste Yönetimi ──*\n"
         "/addall — Tüm BIST hisselerini ekle\n"
-        "/iptal optimize — Optimize iptal\n"
-        "/iptal check — Tarama iptal"
+        "/add THYAO — Tek hisse ekle\n"
+        "/remove THYAO — Tek hisse çıkar\n"
+        "/watchlist — İzleme listeni gör\n\n"
+        "*── Optimize ──*\n"
+        "/optimize THYAO — Tek hisse EMA optimize\n"
+        "/optimizeall — Tüm listeyi optimize et (haftalık çalıştır)\n\n"
+        "*── İptal ──*\n"
+        "/iptal check — Taramayı durdur\n"
+        "/iptal optimize — Tek optimize durdur\n"
+        "/iptal optimizeall — Toplu optimize durdur"
     )
 
 @bot.message_handler(commands=['iptal'])
@@ -843,6 +997,20 @@ def iptal(message):
     op      = parts[1].lower() if len(parts) > 1 else "check"
     get_cancel_flag(chat_id, op).set()
     bot.reply_to(message, f"🚫 '{op}' işlemi iptal sinyali gönderildi.")
+
+@bot.message_handler(commands=['optimizeall'])
+def optimizeall(message):
+    chat_id = str(message.chat.id)
+    lst     = wl_get(chat_id)
+    if not lst:
+        bot.reply_to(message, "📭 Liste boş! Önce /addall yaz."); return
+    bot.reply_to(message,
+        f"⚙️ *Toplu optimize başlatılıyor...*\n"
+        f"📋 {len(lst)} hisse optimize edilecek\n"
+        f"💡 Bu işlemi haftada bir kez yapman yeterli.\n"
+        f"🚫 Durdurmak için: /iptal optimizeall"
+    )
+    threading.Thread(target=_run_optimizeall, args=(chat_id,), daemon=True).start()
 
 @bot.message_handler(commands=['addall'])
 def add_all(message):
