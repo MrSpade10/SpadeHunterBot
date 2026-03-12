@@ -20,8 +20,12 @@ TOKEN        = (os.getenv('TELEGRAM_TOKEN') or '').strip()
 RENDER_URL   = (os.getenv('RENDER_URL') or '').strip()
 DATABASE_URL = (os.getenv('DATABASE_URL') or '').strip()
 PORT         = int(os.getenv('PORT', 10000))
-GEMINI_KEY   = (os.getenv('GEMINI_KEY') or '').strip()
-GROQ_KEY     = (os.getenv('GROQ_KEY') or '').strip()
+GEMINI_KEY   = (os.getenv('GEMINI_KEY')  or '').strip()
+GEMINI_KEY2  = (os.getenv('GEMINI_KEY2') or '').strip()
+GEMINI_KEY3  = (os.getenv('GEMINI_KEY3') or '').strip()
+GROQ_KEY     = (os.getenv('GROQ_KEY')  or '').strip()
+GROQ_KEY2    = (os.getenv('GROQ_KEY2') or '').strip()
+GROQ_KEY3    = (os.getenv('GROQ_KEY3') or '').strip()
 
 bot = telebot.TeleBot(TOKEN, threaded=False)
 app = Flask(__name__)
@@ -360,6 +364,7 @@ def set_webhook():
 def _set_bot_commands():
     """Telegram '/' menüsündeki komut listesini günceller."""
     commands = [
+        telebot.types.BotCommand("tara",         "16 strateji: /tara 1..14 | /tara A/B/C | /tara all"),
         telebot.types.BotCommand("check",        "Tara: /check all | /check 50 | /check THYAO"),
         telebot.types.BotCommand("checksingle",  "Detaylı debug analizi"),
         telebot.types.BotCommand("addall",        "BIST hisselerini ekle"),
@@ -1697,6 +1702,554 @@ def check_single(message):
 
     bot.send_message(str(message.chat.id), "\n".join(lines))
 
+
+# ═══════════════════════════════════════════════════════════════
+# /tara SİSTEMİ — 13 Profesyonel Strateji
+# ═══════════════════════════════════════════════════════════════
+
+def calc_sma(series, length):
+    return series.rolling(window=length).mean()
+
+def calc_macd(series, fast=12, slow=26, signal=9):
+    ema_fast = series.ewm(span=fast, adjust=False).mean()
+    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    macd_line = ema_fast - ema_slow
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    return macd_line, signal_line
+
+def calc_adx(df, period=14):
+    """ADX hesapla."""
+    high = df["High"]; low = df["Low"]; close = df["Close"]
+    tr1 = high - low
+    tr2 = (high - close.shift()).abs()
+    tr3 = (low  - close.shift()).abs()
+    tr  = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(period).mean()
+
+    up   = high - high.shift()
+    down = low.shift() - low
+    plus_dm  = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+
+    plus_di  = 100 * plus_dm.rolling(period).mean()  / atr.replace(0, np.nan)
+    minus_di = 100 * minus_dm.rolling(period).mean() / atr.replace(0, np.nan)
+
+    dx = (100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan))
+    adx = dx.rolling(period).mean()
+    return adx
+
+def calc_bollinger_width(series, period=20, std_mult=2):
+    """Bollinger Band genişliği (düşük = sıkışma)."""
+    sma   = series.rolling(period).mean()
+    std   = series.rolling(period).std()
+    upper = sma + std_mult * std
+    lower = sma - std_mult * std
+    width = (upper - lower) / sma.replace(0, np.nan) * 100
+    return width
+
+def perf_pct(series, days):
+    """Son N iş günü performans %."""
+    if len(series) < days + 1:
+        return None
+    return (series.iloc[-1] - series.iloc[-days]) / series.iloc[-days] * 100
+
+def tara_indicators(ticker):
+    """
+    Bir hisse için /tara stratejilerinde kullanılacak
+    tüm göstergeleri hesapla. Dict döndürür.
+    """
+    df_d, _ = get_data(ticker)
+    if not isinstance(df_d, pd.DataFrame) or df_d.empty or len(df_d) < 60:
+        return None
+
+    d = df_d.copy()
+    close  = d["Close"]
+    volume = d["Volume"]
+
+    # ── Fiyat ──
+    price = float(close.iloc[-1])
+
+    # ── SMA ──
+    sma20  = calc_sma(close, 20)
+    sma50  = calc_sma(close, 50)
+    sma200 = calc_sma(close, 200)
+    s20  = float(sma20.iloc[-1])  if not sma20.isna().iloc[-1]  else None
+    s50  = float(sma50.iloc[-1])  if not sma50.isna().iloc[-1]  else None
+    s200 = float(sma200.iloc[-1]) if not sma200.isna().iloc[-1] else None
+
+    # ── RSI ──
+    rsi_s = calc_rsi(close, 14).dropna()
+    rsi   = float(rsi_s.iloc[-1]) if len(rsi_s) > 1 else None
+    rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) > 2 else None
+
+    # ── MACD ──
+    macd_line, macd_sig = calc_macd(close)
+    macd_val  = float(macd_line.iloc[-1])  if not macd_line.isna().iloc[-1]  else None
+    macd_sig_val = float(macd_sig.iloc[-1]) if not macd_sig.isna().iloc[-1] else None
+    macd_prev = float(macd_line.iloc[-2])   if len(macd_line) > 2 else None
+    macd_sig_prev = float(macd_sig.iloc[-2]) if len(macd_sig) > 2 else None
+
+    # ── ADX ──
+    adx_s = calc_adx(d)
+    adx   = float(adx_s.iloc[-1]) if not adx_s.isna().iloc[-1] else None
+
+    # ── Bollinger Band Genişliği ──
+    bb_width_s = calc_bollinger_width(close)
+    bb_width   = float(bb_width_s.iloc[-1]) if not bb_width_s.isna().iloc[-1] else None
+    # "Düşük" = son değer 20 günlük ortalamanın altında
+    bb_low_threshold = float(bb_width_s.rolling(20).mean().iloc[-1]) if len(bb_width_s) > 20 else None
+    bb_width_low = (bb_width is not None and bb_low_threshold is not None and
+                    bb_width < bb_low_threshold)
+
+    # ── Hacim ──
+    vol_avg20 = float(volume.rolling(20).mean().iloc[-1])
+    vol_cur   = float(volume.iloc[-1])
+    rel_vol   = vol_cur / vol_avg20 if vol_avg20 > 0 else 0
+
+    # ── Performans ──
+    perf_1d  = perf_pct(close, 1)
+    perf_5d  = perf_pct(close, 5)   # ~haftalık
+    perf_21d = perf_pct(close, 21)  # ~aylık
+    perf_63d = perf_pct(close, 63)  # ~3 aylık
+    perf_252d = perf_pct(close, 252) # ~1 yıllık
+
+    # ── MACD yeni yukarı kesişim ──
+    macd_fresh_cross = (macd_val is not None and macd_sig_val is not None and
+                        macd_prev is not None and macd_sig_prev is not None and
+                        macd_val > macd_sig_val and macd_prev <= macd_sig_prev)
+
+    return {
+        "ticker": ticker,
+        "price": price,
+        "sma20": s20, "sma50": s50, "sma200": s200,
+        "rsi": rsi, "rsi_prev": rsi_prev,
+        "macd": macd_val, "macd_sig": macd_sig_val,
+        "macd_fresh_cross": macd_fresh_cross,
+        "adx": adx,
+        "bb_width": bb_width, "bb_width_low": bb_width_low,
+        "vol_avg20": vol_avg20, "vol_cur": vol_cur, "rel_vol": rel_vol,
+        "perf_1d": perf_1d, "perf_5d": perf_5d,
+        "perf_21d": perf_21d, "perf_63d": perf_63d, "perf_252d": perf_252d,
+    }
+
+# ── Strateji Filtreleri ──────────────────────────────────────
+
+TARA_STRATEJILER = {
+    "1": ("🧠 Smart Money Birikim",      "Patlama öncesi sessiz birikim aşaması"),
+    "2": ("📈 Düşen Trend Kırılımı",     "Yeni yükseliş başlangıcı sinyali"),
+    "3": ("🔄 Güçlü Dipten Dönüş",       "Destekten güçlü RSI dönüşü"),
+    "4": ("🚀 Momentum Patlaması",        "Sert yükseliş — hacim + RSI + MACD uyumu"),
+    "6": ("🔥 Tavan Serisi",             "Ardışık tavan yapabilecek hisseler"),
+    "7": ("💎 Akümülasyon Çıkışı",       "Büyük hareket başlangıcı"),
+    "8": ("🌱 Erken Trend Doğumu",       "Trend henüz başlıyor, SMA dizilimi oluştu"),
+    "9": ("🏦 Kurumsal Para Girişi",     "Gizli kurumsal toplama sinyali"),
+    "10": ("⚖️ Güçlü Konsolidasyon",    "Sıkışma — yakında büyük hareket"),
+    "11": ("⚡ Volatilite Patlaması",    "Ani hacim + fiyat hareketi"),
+    "12": ("👑 Sektör Lideri",           "Güçlü hisseler — trend liderliği"),
+    "13": ("🌅 Dipten Lider Doğuşu",    "Derin düşüşten güçlü dönüş"),
+    "14": ("💰 Büyük Ralli",            "+%50 potansiyel — tüm göstergeler uyumlu"),
+    "A":  ("💪 Piyasadan Güçlü",        "Relative strength — endekstten üstün"),
+    "B":  ("💸 Büyük Para Girişi",      "Günlük trade fırsatı"),
+    "C":  ("🛡️ Endeks Düşerken Güçlü", "Düşen piyasada ayakta kalan hisseler"),
+}
+
+def strateji_filtre(ind, kod):
+    """
+    Verilen gösterge sözlüğünü strateji koduna göre filtrele.
+    True dönerse hisse bu stratejiye giriyor demektir.
+    """
+    p = ind
+    price = p["price"]
+
+    def gt(val, thr): return val is not None and val > thr
+    def lt(val, thr): return val is not None and val < thr
+    def between(val, lo, hi): return val is not None and lo <= val <= hi
+    def near(val, ref, pct): return val is not None and ref is not None and abs(val - ref) / ref * 100 <= pct
+
+    if kod == "1":   # Smart Money Birikim
+        return (gt(price, p["sma200"] or 0) and
+                near(price, p["sma50"], 5) and
+                between(p["rsi"], 40, 65) and
+                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["rel_vol"], 1.3) and
+                p["bb_width_low"] and
+                between(p["perf_5d"], 0, 5) and
+                gt(p["perf_21d"], 10))
+
+    elif kod == "2": # Düşen Trend Kırılımı
+        return (gt(price, p["sma20"] or 0) and
+                gt(price, p["sma50"] or 0) and
+                between(p["rsi"], 50, 70) and
+                gt(p["macd"], p["macd_sig"] or -999) and
+                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["rel_vol"], 1.3) and
+                gt(p["perf_1d"], 2) and
+                gt(p["perf_5d"], 5) and
+                lt(p["perf_21d"], 10))
+
+    elif kod == "3": # Güçlü Dipten Dönüş
+        rsi_cross_up = (p["rsi"] is not None and p["rsi_prev"] is not None and
+                        p["rsi"] > 30 and p["rsi_prev"] <= 30)
+        return (lt(p["rsi"], 40) and
+                rsi_cross_up and
+                gt(price, p["sma20"] or 0) and
+                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["perf_1d"], 2) and
+                lt(p["perf_5d"], 0) and
+                lt(p["perf_21d"], 0))
+
+    elif kod == "4": # Momentum Patlaması
+        return (gt(price, p["sma50"] or 0) and
+                gt(price, p["sma200"] or 0) and
+                between(p["rsi"], 55, 70) and
+                gt(p["macd"], p["macd_sig"] or -999) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
+                gt(p["rel_vol"], 1.5) and
+                gt(p["perf_5d"], 8) and
+                gt(p["perf_21d"], 15))
+
+    elif kod == "6": # Tavan Serisi
+        return (gt(price, p["sma20"] or 0) and
+                gt(price, p["sma50"] or 0) and
+                between(p["rsi"], 60, 80) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
+                gt(p["rel_vol"], 2) and
+                gt(p["perf_1d"], 5) and
+                gt(p["perf_5d"], 15) and
+                gt(p["perf_21d"], 30) and
+                gt(p["adx"], 30))
+
+    elif kod == "7": # Akümülasyon Çıkışı
+        return (gt(price, p["sma50"] or 0) and
+                gt(price, p["sma200"] or 0) and
+                between(p["rsi"], 55, 70) and
+                p["macd_fresh_cross"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
+                gt(p["rel_vol"], 1.5) and
+                gt(p["perf_1d"], 3) and
+                gt(p["perf_5d"], 8) and
+                between(p["perf_21d"], 0, 10))
+
+    elif kod == "8": # Erken Trend Doğumu
+        return (gt(price, p["sma20"] or 0) and
+                gt(price, p["sma50"] or 0) and
+                gt(p["sma20"] or 0, p["sma50"] or 0) and
+                between(p["rsi"], 50, 65) and
+                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["rel_vol"], 1.3) and
+                between(p["perf_5d"], 0, 6) and
+                between(p["perf_21d"], 0, 12))
+
+    elif kod == "9": # Kurumsal Para Girişi
+        return (gt(price, p["sma50"] or 0) and
+                between(p["rsi"], 45, 60) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
+                gt(p["rel_vol"], 1.7) and
+                between(p["perf_5d"], 0, 6) and
+                between(p["perf_21d"], 5, 20))
+
+    elif kod == "10": # Güçlü Konsolidasyon
+        return (near(price, p["sma50"], 5) and
+                between(p["rsi"], 40, 55) and
+                between(p["perf_1d"], -1, 1) and
+                between(p["perf_5d"], -3, 3) and
+                lt(p["vol_cur"], p["vol_avg20"]))
+
+    elif kod == "11": # Volatilite Patlaması
+        return (gt(price, p["sma20"] or 0) and
+                gt(p["rsi"], 55) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
+                gt(p["rel_vol"], 2) and
+                gt(p["perf_1d"], 3) and
+                gt(p["perf_5d"], 8))
+
+    elif kod == "12": # Sektör Lideri
+        return (gt(price, p["sma50"] or 0) and
+                gt(price, p["sma200"] or 0) and
+                gt(p["rsi"], 60) and
+                gt(p["perf_5d"], 10) and
+                gt(p["perf_21d"], 20) and
+                gt(p["perf_63d"], 35))
+
+    elif kod == "13": # Dipten Lider Doğuşu
+        return (lt(p["perf_252d"], -30) and
+                lt(p["rsi"], 40) and
+                gt(price, p["sma20"] or 0) and
+                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["perf_1d"], 2))
+
+    elif kod == "14": # Büyük Ralli
+        return (gt(price, p["sma50"] or 0) and
+                gt(price, p["sma200"] or 0) and
+                between(p["rsi"], 60, 78) and
+                gt(p["adx"], 30) and
+                gt(p["macd"], p["macd_sig"] or -999) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
+                gt(p["perf_5d"], 15) and
+                gt(p["perf_21d"], 25))
+
+    elif kod == "A": # Relative Strength
+        return (gt(price, p["sma50"] or 0) and
+                gt(price, p["sma200"] or 0) and
+                gt(p["perf_5d"], 10) and
+                gt(p["perf_21d"], 20) and
+                gt(p["rsi"], 55))
+
+    elif kod == "B": # Büyük Para Girişi
+        return (gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
+                gt(p["rel_vol"], 2) and
+                gt(p["perf_1d"], 2) and
+                gt(p["rsi"], 50) and
+                gt(price, p["sma20"] or 0))
+
+    elif kod == "C": # Endeks Düşerken Güçlü
+        return (gt(p["perf_1d"], 0) and
+                gt(p["perf_5d"], 5) and
+                gt(p["rsi"], 55) and
+                gt(price, p["sma50"] or 0))
+
+    return False
+
+def tara_single_strategy(chat_id, tickers, kod):
+    """Tek bir strateji için tüm listeyi tara, sonuçları döndür."""
+    isim, aciklama = TARA_STRATEJILER.get(kod, (kod, ""))
+    eslesen = []
+    hata = 0
+
+    for ticker in tickers:
+        try:
+            ind = tara_indicators(ticker)
+            if ind is None:
+                hata += 1
+                continue
+            if strateji_filtre(ind, kod):
+                eslesen.append(ind)
+        except Exception as e:
+            hata += 1
+            debug_log("WARN", f"tara/{kod}", f"{ticker}: {str(e)[:60]}")
+
+    return eslesen
+
+def tara_format_results(kod, eslesen, ai_yorum=True):
+    """Tarama sonuçlarını formatlı mesaj olarak döndür."""
+    isim, aciklama = TARA_STRATEJILER.get(kod, (kod, ""))
+    satirlar = [
+        f"{isim}",
+        f"{aciklama}",
+        f"Eslesme: {len(eslesen)} hisse",
+        "━━━━━━━━━━━━━━━━━━━",
+    ]
+
+    if not eslesen:
+        satirlar.append("Bu kriterle esleyen hisse bulunamadi.")
+        return "\n".join(satirlar), []
+
+    # RSI'ya göre sırala (en güçlü önce)
+    eslesen_sorted = sorted(eslesen, key=lambda x: x.get("rsi") or 0, reverse=True)
+
+    for ind in eslesen_sorted[:20]:  # Max 20 hisse göster
+        t = ind["ticker"].replace(".IS","")
+        rsi = ind["rsi"]
+        rv  = ind["rel_vol"]
+        p1d = ind["perf_1d"]
+        p5d = ind["perf_5d"]
+        p21d = ind["perf_21d"]
+
+        satirlar.append(
+            f"{t} | RSI:{rsi:.0f} | RV:{rv:.1f}x | "
+            f"G:{'+' if p1d and p1d>0 else ''}{p1d:.1f}% "
+            f"H:{'+' if p5d and p5d>0 else ''}{p5d:.1f}% "
+            f"A:{'+' if p21d and p21d>0 else ''}{p21d:.1f}%"
+            if (rsi and rv and p1d is not None and p5d is not None and p21d is not None)
+            else f"{t}"
+        )
+
+    if len(eslesen) > 20:
+        satirlar.append(f"... ve {len(eslesen)-20} hisse daha")
+
+    return "\n".join(satirlar), eslesen_sorted[:5]  # Top 5'i AI yorumu için döndür
+
+def tara_ai_yorum(kod, eslesen_top5):
+    """Top 5 hisse için tek bir Gemini yorumu."""
+    if not eslesen_top5:
+        return None
+    isim, aciklama = TARA_STRATEJILER.get(kod, (kod, ""))
+    hisse_listesi = []
+    for ind in eslesen_top5:
+        t = ind["ticker"].replace(".IS","")
+        hisse_listesi.append(
+            f"{t}: Fiyat={ind['price']:.2f} RSI={ind['rsi']:.1f if ind['rsi'] else '?'} "
+            f"RelVol={ind['rel_vol']:.1f} Perf5d={ind['perf_5d']:.1f if ind['perf_5d'] else '?'}%"
+        )
+
+    prompt = f"""Sen BIST uzmanı bir teknik analistsin.
+
+Strateji: {isim} — {aciklama}
+
+Bu stratejiye göre taramadan çıkan en güçlü hisseler:
+{chr(10).join(hisse_listesi)}
+
+Kısa ve net Türkçe yanıt ver:
+🏆 EN GÜÇLÜ: (hangi hisse neden öne çıkıyor, 2 cümle)
+⚡ STRATEJİ NOTU: (bu stratejinin bugünkü piyasa koşullarında güvenilirliği)
+⚠️ RİSK: (dikkat edilmesi gereken tek şey)"""
+
+    return gemini_ask(prompt, max_tokens=300)
+
+# ── /tara Komutu ──────────────────────────────────────────────
+@bot.message_handler(commands=['tara'])
+def cmd_tara(message):
+    chat_id = str(message.chat.id)
+    parts = message.text.strip().split()
+    call_log("tara", chat_id, parts[1] if len(parts) > 1 else "menu")
+
+    # Menü göster
+    if len(parts) < 2:
+        menu = [
+            "📊 TARA — Strateji Seçimi",
+            "━━━━━━━━━━━━━━━━━━━",
+            "Kullanım: /tara [numara]",
+            "",
+            "🧠 /tara 1  — Smart Money Birikim",
+            "📈 /tara 2  — Düşen Trend Kırılımı",
+            "🔄 /tara 3  — Güçlü Dipten Dönüş",
+            "🚀 /tara 4  — Momentum Patlaması",
+            "🔥 /tara 6  — Tavan Serisi",
+            "💎 /tara 7  — Akümülasyon Çıkışı",
+            "🌱 /tara 8  — Erken Trend Doğumu",
+            "🏦 /tara 9  — Kurumsal Para Girişi",
+            "⚖️ /tara 10 — Güçlü Konsolidasyon",
+            "⚡ /tara 11 — Volatilite Patlaması",
+            "👑 /tara 12 — Sektör Lideri",
+            "🌅 /tara 13 — Dipten Lider Doğuşu",
+            "💰 /tara 14 — Büyük Ralli",
+            "",
+            "⭐ EKSTRA:",
+            "💪 /tara A  — Piyasadan Güçlü",
+            "💸 /tara B  — Büyük Para Girişi",
+            "🛡️ /tara C  — Endeks Düşerken Güçlü",
+            "",
+            "🔍 /tara all — Tüm stratejiler (Cuma raporu)",
+        ]
+        bot.send_message(chat_id, "\n".join(menu))
+        return
+
+    kod = parts[1].upper()
+
+    # all — tüm stratejiler
+    if kod == "ALL":
+        threading.Thread(target=_tara_all, args=(chat_id,), daemon=True).start()
+        return
+
+    # Geçerli strateji mi?
+    kod = parts[1]  # Orijinal hali koru (A/B/C büyük, sayılar sayı)
+    if kod.upper() in [k.upper() for k in TARA_STRATEJILER]:
+        # Büyük harf normalizasyonu
+        for k in TARA_STRATEJILER:
+            if k.upper() == kod.upper():
+                kod = k
+                break
+        threading.Thread(target=_tara_single, args=(chat_id, kod), daemon=True).start()
+    else:
+        bot.send_message(chat_id, f"❌ Geçersiz strateji: {kod}\n/tara yazarak listeyi gör.")
+
+def _tara_single(chat_id, kod):
+    """Tek strateji taraması — thread içinde çalışır."""
+    isim, aciklama = TARA_STRATEJILER[kod]
+    tickers = wl_get(chat_id)
+    if not tickers:
+        bot.send_message(chat_id, "📭 Watchlist boş! /addall yaz."); return
+
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    simdi = datetime.now(tr_tz).strftime("%H:%M")
+
+    bot.send_message(chat_id,
+        f"🔍 {isim}\n"
+        f"{len(tickers)} hisse taranıyor... ({simdi})\n"
+        f"Tahmini süre: ~{max(1, len(tickers)//40)} dk\n"
+        f"🚫 İptal: /iptal check")
+
+    eslesen = tara_single_strategy(chat_id, tickers, kod)
+
+    # Sonuç mesajı
+    mesaj, top5 = tara_format_results(kod, eslesen)
+    bot.send_message(chat_id, mesaj)
+
+    # AI yorumu
+    if top5:
+        bot.send_message(chat_id, "🤖 AI analiz yapıyor...")
+        try:
+            yorum = tara_ai_yorum(kod, top5)
+            if yorum:
+                bot.send_message(chat_id, f"🤖 AI YORUMU\n━━━━━━━━━━━━━━━━━━━\n{yorum}")
+        except Exception as e:
+            debug_log("ERROR", "tara_ai_yorum", str(e)[:100])
+
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    simdi = datetime.now(tr_tz).strftime("%H:%M")
+    bot.send_message(chat_id, f"✅ Tarama tamamlandı ({simdi})")
+
+def _tara_all(chat_id):
+    """Tüm stratejileri sırayla tara — Cuma raporu veya /tara all."""
+    tickers = wl_get(chat_id)
+    if not tickers:
+        bot.send_message(chat_id, "📭 Watchlist boş! /addall yaz."); return
+
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    simdi = datetime.now(tr_tz).strftime("%d.%m.%Y %H:%M")
+    kodlar = list(TARA_STRATEJILER.keys())
+
+    bot.send_message(chat_id,
+        f"📊 TAM STRATEJİ TARAMASI\n"
+        f"{simdi}\n"
+        f"{len(tickers)} hisse × {len(kodlar)} strateji\n"
+        f"Tahmini süre: ~{max(5, len(tickers)//40)} dk\n"
+        f"━━━━━━━━━━━━━━━━━━━")
+
+    ozet_satirlar = [f"📊 TARAMA OZETI — {simdi}", ""]
+    tum_eslesen = {}
+
+    for i, kod in enumerate(kodlar):
+        if is_cancelled(chat_id, "check"):
+            bot.send_message(chat_id, "🚫 Tarama iptal edildi."); return
+
+        isim, _ = TARA_STRATEJILER[kod]
+        bot.send_message(chat_id, f"⏳ [{i+1}/{len(kodlar)}] {isim} taranıyor...")
+
+        eslesen = tara_single_strategy(chat_id, tickers, kod)
+        tum_eslesen[kod] = eslesen
+
+        mesaj, top5 = tara_format_results(kod, eslesen, ai_yorum=False)
+        bot.send_message(chat_id, mesaj)
+
+        ozet_satirlar.append(f"{isim}: {len(eslesen)} hisse")
+
+        # Her strateji için AI yorumu (eşleşme varsa)
+        if top5:
+            try:
+                yorum = tara_ai_yorum(kod, top5)
+                if yorum:
+                    bot.send_message(chat_id, f"🤖 {isim}\n{yorum}")
+            except Exception as e:
+                debug_log("ERROR", f"tara_all/ai/{kod}", str(e)[:80])
+
+        time.sleep(1)  # Flood limiti
+
+    # Genel özet
+    en_cok = sorted(tum_eslesen.items(), key=lambda x: len(x[1]), reverse=True)[:3]
+    ozet_satirlar += [
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "EN FAZLA ESLESEN:",
+    ]
+    for kod, eslesen in en_cok:
+        isim, _ = TARA_STRATEJILER[kod]
+        ozet_satirlar.append(f"  {isim}: {len(eslesen)} hisse")
+
+    bot.send_message(chat_id, "\n".join(ozet_satirlar))
+    bot.send_message(chat_id, "✅ Tüm stratejiler tamamlandı!")
+
+
 @bot.message_handler(commands=['check'])
 def manual_check(message):
     chat_id = str(message.chat.id)
@@ -1935,6 +2488,8 @@ _ai_usage = {
     "groq_reset_tokens": "?",
     "gemini_last_error": None,
     "gemini_quota_date": "",   # 429 yaşanan tarih (DB'den yüklenir)
+    "gemini_active_key": 1,       # Şu an hangi key kullanılıyor (1 veya 2)
+    "groq_active_key": 1,         # Şu an hangi Groq key kullanılıyor
     "groq_last_error": None,
 }
 
@@ -1953,10 +2508,43 @@ GEMINI_MODELS = [
     "gemini-2.0-flash-001",
 ]
 
+def _gemini_keys():
+    """Aktif key listesini döndür — boş olmayanlar."""
+    keys = []
+    if GEMINI_KEY:  keys.append((1, GEMINI_KEY))
+    if GEMINI_KEY2: keys.append((2, GEMINI_KEY2))
+    if GEMINI_KEY3: keys.append((3, GEMINI_KEY3))
+    return keys
+
+def _groq_keys():
+    """Aktif Groq key listesini döndür — boş olmayanlar."""
+    keys = []
+    if GROQ_KEY:  keys.append((1, GROQ_KEY))
+    if GROQ_KEY2: keys.append((2, GROQ_KEY2))
+    if GROQ_KEY3: keys.append((3, GROQ_KEY3))
+    return keys
+
+def _gemini_key_exhausted(key_no):
+    """Bir key'in bugün kota dolup dolmadığını kontrol et."""
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    try:
+        return db_get(f"gemini_quota_exhausted_{key_no}") == today
+    except Exception:
+        return False
+
+def _gemini_mark_exhausted(key_no):
+    """Key'i bugün için tükenmiş olarak işaretle."""
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    try:
+        db_set(f"gemini_quota_exhausted_{key_no}", today)
+    except Exception:
+        pass
+    _ai_usage["gemini_quota_date"] = today
+
 def gemini_ask(prompt, max_tokens=600):
-    """Gemini'ye istek gönder — 429/hata durumunda Groq'a fallback."""
-    if not GEMINI_KEY:
-        # Gemini key yoksa direkt Groq dene
+    """Gemini key1 → key2 → Groq sırasıyla dene."""
+    keys = _gemini_keys()
+    if not keys:
         if GROQ_KEY:
             _ai_usage["gemini_last_model"] = "groq-fallback(no-key)"
             return groq_ask(prompt, max_tokens)
@@ -1966,55 +2554,48 @@ def gemini_ask(prompt, max_tokens=600):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4}
     }
-    last_err = ""
-    kota_doldu = False
 
-    for model in GEMINI_MODELS:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
-        try:
-            resp = requests.post(url, json=payload, timeout=20)
-            if resp.status_code == 404:
-                print(f"Gemini model bulunamadı: {model}, sıradaki deneniyor...")
-                continue
-            if resp.status_code == 429:
-                kota_doldu = True
-                last_err = "429 kota doldu"
-                print(f"Gemini 429 kota — Groq fallback devreye giriyor")
-                # DB'ye kaydet (restart'ta da hatırlasın)
-                today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
-                try:
-                    db_set("gemini_quota_exhausted", today)
-                except Exception:
-                    pass
-                _ai_usage["gemini_quota_date"] = today
-                break   # Diğer modelleri deneme, hepsi aynı kotayı kullanır
-            if resp.status_code == 403:
-                last_err = f"403 API key geçersiz"
-                break
-            resp.raise_for_status()
-            data = resp.json()
-            _ai_count("gemini")
-            _ai_usage["gemini_last_model"] = model
-            _ai_usage["gemini_last_error"] = None
-            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-        except Exception as e:
-            last_err = str(e)
-            print(f"Gemini hata ({model}): {e}")
+    for key_no, api_key in keys:
+        if _gemini_key_exhausted(key_no):
+            print(f"Gemini Key{key_no} bugün tükenmiş, sıradaki deneniyor...")
             continue
+        for model in GEMINI_MODELS:
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+            try:
+                resp = requests.post(url, json=payload, timeout=20)
+                if resp.status_code == 404:
+                    continue
+                if resp.status_code == 429:
+                    print(f"Gemini Key{key_no} 429 kota doldu — sıradaki key deneniyor...")
+                    _gemini_mark_exhausted(key_no)
+                    break
+                if resp.status_code == 403:
+                    print(f"Gemini Key{key_no} 403 geçersiz")
+                    break
+                resp.raise_for_status()
+                data = resp.json()
+                _ai_count("gemini")
+                _ai_usage["gemini_last_model"] = f"Key{key_no}/{model}"
+                _ai_usage["gemini_active_key"] = key_no
+                _ai_usage["gemini_last_error"] = None
+                return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+            except Exception as e:
+                print(f"Gemini hata (Key{key_no}/{model}): {e}")
+                continue
 
-    # Gemini başarısız — Groq fallback
+    # Tüm keyler tükendi — Groq fallback
     if GROQ_KEY:
-        print(f"Gemini başarısız ({last_err}), Groq fallback deneniyor...")
-        _ai_usage["gemini_last_model"] = f"groq-fallback({'kota' if kota_doldu else 'hata'})"
-        _ai_usage["gemini_last_error"] = last_err[:100]
+        print("Tüm Gemini keyleri başarısız, Groq devreye giriyor...")
+        _ai_usage["gemini_last_model"] = "groq-fallback(tum-keyler-tukendi)"
+        _ai_usage["gemini_last_error"] = "Tüm keyler tükendi"
         groq_yanit = groq_ask(prompt, max_tokens)
         if not groq_yanit.startswith("⚠️"):
             return "[Groq]\n" + groq_yanit
         return groq_yanit
 
-    _ai_usage["gemini_last_error"] = last_err[:100]
-    debug_log("ERROR", "gemini_ask", f"Tüm modeller başarısız", last_err[:200])
-    return f"⚠️ Gemini yanıt vermedi: {last_err[:80]}"
+    debug_log("ERROR", "gemini_ask", "Tüm Gemini keyleri ve Groq başarısız")
+    return "⚠️ Tüm AI servisleri yanıt vermedi."
+
 
 def gemini_analyze_signal(ticker, signals, rsi_d, rsi_w, close_price, ema_d, ema_w):
     """Bir hisse için Gemini analizi: yorum + destek/direnç + karakter."""
@@ -2041,37 +2622,80 @@ Lütfen şu formatta yanıt ver (Türkçe, kısa ve net):
     return gemini_ask(prompt, max_tokens=350)
 
 # ── Groq API ─────────────────────────────────────────────────
+def _groq_key_exhausted(key_no):
+    """Groq key'inin bugün rate limit yiyip yemediğini kontrol et."""
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    try:
+        return db_get(f"groq_ratelimit_{key_no}") == today
+    except Exception:
+        return False
+
+def _groq_mark_exhausted(key_no):
+    """Groq key'ini bugün için tükenmiş işaretle."""
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    try:
+        db_set(f"groq_ratelimit_{key_no}", today)
+    except Exception:
+        pass
+    _ai_usage["groq_last_error"] = f"Key{key_no} rate limit"
+
 def groq_ask(prompt, max_tokens=800, model="llama-3.1-8b-instant"):
-    """Groq'a istek gönder."""
-    if not GROQ_KEY:
+    """Groq Key1 → Key2 → Key3 sırasıyla dene, rate limit yerse sıradakine geç."""
+    keys = _groq_keys()
+    if not keys:
         return "⚠️ GROQ_KEY tanımlı değil."
+
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {GROQ_KEY}",
-        "Content-Type": "application/json"
-    }
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": max_tokens,
         "temperature": 0.4
     }
-    try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=20)
-        resp.raise_for_status()
-        # Rate limit headerlarını kaydet
-        h = resp.headers
-        _ai_usage["groq_remaining_req"]    = h.get("x-ratelimit-remaining-requests", "?")
-        _ai_usage["groq_remaining_tokens"] = h.get("x-ratelimit-remaining-tokens", "?")
-        _ai_usage["groq_reset_req"]        = h.get("x-ratelimit-reset-requests", "?")
-        _ai_usage["groq_reset_tokens"]     = h.get("x-ratelimit-reset-tokens", "?")
-        _ai_count("groq")
-        _ai_usage["groq_last_error"] = None
-        return resp.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        _ai_usage["groq_last_error"] = str(e)[:100]
-        debug_log("ERROR", "groq_ask", str(e)[:150], traceback.format_exc()[:300])
-        return f"⚠️ Groq yanıt vermedi: {str(e)[:80]}"
+
+    for key_no, api_key in keys:
+        if _groq_key_exhausted(key_no):
+            print(f"Groq Key{key_no} bugün tükenmiş, sıradaki deneniyor...")
+            continue
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json"
+        }
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=20)
+
+            if resp.status_code == 429:
+                rst = resp.headers.get("x-ratelimit-reset-requests", "?")
+                print(f"Groq Key{key_no} 429 rate limit (reset: {rst}) — sıradaki key deneniyor...")
+                _groq_mark_exhausted(key_no)
+                continue
+
+            if resp.status_code == 401:
+                print(f"Groq Key{key_no} 401 geçersiz — sıradaki key deneniyor...")
+                _ai_usage["groq_last_error"] = f"Key{key_no} 401 geçersiz"
+                continue
+
+            resp.raise_for_status()
+
+            # Başarılı — header'ları kaydet
+            h = resp.headers
+            _ai_usage["groq_remaining_req"]    = h.get("x-ratelimit-remaining-requests", "?")
+            _ai_usage["groq_remaining_tokens"] = h.get("x-ratelimit-remaining-tokens", "?")
+            _ai_usage["groq_reset_req"]        = h.get("x-ratelimit-reset-requests", "?")
+            _ai_usage["groq_reset_tokens"]     = h.get("x-ratelimit-reset-tokens", "?")
+            _ai_usage["groq_active_key"]       = key_no
+            _ai_count("groq")
+            _ai_usage["groq_last_error"] = None
+            return resp.json()["choices"][0]["message"]["content"].strip()
+
+        except Exception as e:
+            print(f"Groq hata (Key{key_no}): {e}")
+            _ai_usage["groq_last_error"] = str(e)[:100]
+            debug_log("ERROR", "groq_ask", str(e)[:150], traceback.format_exc()[:200])
+            continue
+
+    return "⚠️ Tüm Groq keyleri yanıt vermedi."
 
 def groq_news_summary(news_text, context="genel piyasa"):
     """Groq ile haber özetle ve yorum yap."""
@@ -2138,8 +2762,8 @@ def cmd_analiz(message):
         bot.reply_to(message, "Kullanım: /analiz THYAO"); return
     ticker = parts[1].upper().replace(".IS","")
 
-    if not GEMINI_KEY:
-        bot.reply_to(message, "❌ GEMINI_KEY tanımlı değil. Render'a ekleyin."); return
+    if not _gemini_keys():
+        bot.reply_to(message, "❌ Hiç GEMINI_KEY tanımlı değil. Render'a ekleyin."); return
 
     bot.send_message(chat_id, f"🤖 *{ticker}* için Gemini analizi yapılıyor...", parse_mode='Markdown')
 
@@ -2193,8 +2817,8 @@ def cmd_haber(message):
     parts = message.text.strip().split()
     call_log("haber", chat_id, parts[1] if len(parts)>1 else "genel")
 
-    if not GROQ_KEY:
-        bot.reply_to(message, "❌ GROQ_KEY tanımlı değil. Render'a ekleyin."); return
+    if not _groq_keys():
+        bot.reply_to(message, "❌ Hiç GROQ_KEY tanımlı değil. Render'a ekleyin."); return
 
     def _run_haber(ticker=None):
         try:
@@ -2316,59 +2940,79 @@ def cmd_kredi(message):
     tr_tz = pytz.timezone("Europe/Istanbul")
     now_str = datetime.now(tr_tz).strftime("%d.%m.%Y %H:%M")
 
-    # Gemini durumu
-    gemini_ok = "✅ Aktif" if GEMINI_KEY else "❌ Key yok"
-    gemini_used  = _ai_usage.get("gemini_today", 0)
-    gemini_limit = 1500
-    gemini_kalan = gemini_limit - gemini_used
-    gemini_bar   = "█" * min(20, int(gemini_used/gemini_limit*20)) + "░" * max(0, 20 - int(gemini_used/gemini_limit*20))
-    gemini_err   = _ai_usage.get("gemini_last_error")
-
-    # Groq durumu
-    groq_ok = "✅ Aktif" if GROQ_KEY else "❌ Key yok"
-    groq_used   = _ai_usage.get("groq_today", 0)
-    groq_rem_r  = _ai_usage.get("groq_remaining_req", "?")
-    groq_rem_t  = _ai_usage.get("groq_remaining_tokens", "?")
-    groq_rst_r  = _ai_usage.get("groq_reset_req", "?")
-    groq_err    = _ai_usage.get("groq_last_error")
-
-    # Hata satırlarını ayrı değişkenlere al (f-string içinde koşul sorun çıkarır)
-    # Kota durumu kontrolü
     today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
-    quota_date = _ai_usage.get("gemini_quota_date", "")
-    if quota_date == today:
-        gemini_hata = "🔴 GÜNLÜK KOTA DOLDU — Groq fallback aktif (gece 00:00'da sıfırlanır)"
+    gemini_limit = 1500
+    wl_count = len(wl_get(chat_id) or [])
+
+    # --- Gemini key durumları ---
+    g_keys = _gemini_keys()
+    gemini_used = _ai_usage.get("gemini_today", 0)
+    gemini_aktif_no = _ai_usage.get("gemini_active_key", "-")
+    gemini_last_model = _ai_usage.get("gemini_last_model", "henuz kullanilmadi")
+    gemini_err = _ai_usage.get("gemini_last_error")
+    gemini_bar = "█" * min(20, int(gemini_used/gemini_limit*20)) + "░" * max(0, 20-int(gemini_used/gemini_limit*20))
+    gemini_pct = int(gemini_used/gemini_limit*100) if gemini_limit > 0 else 0
+
+    g_key_satirlar = []
+    for kno, _ in [(1,GEMINI_KEY),(2,GEMINI_KEY2),(3,GEMINI_KEY3)]:
+        k_var = [GEMINI_KEY, GEMINI_KEY2, GEMINI_KEY3][kno-1]
+        if not k_var:
+            g_key_satirlar.append(f"  Key{kno}: ❌ Eklenmemis")
+            continue
+        doldu = db_get(f"gemini_quota_exhausted_{kno}") == today
+        aktif = "← AKTIF" if kno == gemini_aktif_no else ""
+        durum = "🔴 KOTA DOLDU" if doldu else "🟢 Hazir"
+        g_key_satirlar.append(f"  Key{kno}: {durum} {aktif}")
+
+    if gemini_err and "429" in str(gemini_err):
+        gemini_hata = "🔴 Kota sorunu — diger key'e gecildi"
     elif gemini_err:
-        gemini_hata = f"⚠️ Son hata: {gemini_err}"
+        gemini_hata = f"Son hata: {gemini_err[:60]}"
     else:
         gemini_hata = "✅ Hata yok"
-    groq_hata   = f"⚠️ Son hata: {groq_err}"   if groq_err   else "✅ Hata yok"
-    gemini_pct  = int(gemini_used / gemini_limit * 100) if gemini_limit > 0 else 0
-    wl_count    = len(wl_get(chat_id) or [])
+
+    # --- Groq key durumları ---
+    groq_used = _ai_usage.get("groq_today", 0)
+    groq_rem_r = _ai_usage.get("groq_remaining_req", "?")
+    groq_rem_t = _ai_usage.get("groq_remaining_tokens", "?")
+    groq_rst_r = _ai_usage.get("groq_reset_req", "?")
+    groq_err = _ai_usage.get("groq_last_error")
+    groq_aktif_no = _ai_usage.get("groq_active_key", "-")
+
+    gr_key_satirlar = []
+    for kno, kval in [(1,GROQ_KEY),(2,GROQ_KEY2),(3,GROQ_KEY3)]:
+        if not kval:
+            gr_key_satirlar.append(f"  Key{kno}: ❌ Eklenmemis")
+            continue
+        doldu = db_get(f"groq_ratelimit_{kno}") == today
+        aktif = "← AKTIF" if kno == groq_aktif_no else ""
+        durum = "🔴 RATE LIMIT" if doldu else "🟢 Hazir"
+        gr_key_satirlar.append(f"  Key{kno}: {durum} {aktif}")
+
+    groq_hata = f"Son hata: {groq_err[:60]}" if groq_err else "✅ Hata yok"
 
     lines = [
-        "🤖 AI Kredi & Kullanım Durumu",
-        f"🕐 {now_str}",
+        "🤖 AI Kredi ve Kullanim Durumu",
+        f"Tarih: {now_str}",
         "━━━━━━━━━━━━━━━━━━━",
         "",
-        f"🟣 GEMINI (Google AI) — {gemini_ok}",
-        f"  Plan: Ucretsiz | Gunluk limit: {gemini_limit}",
-        f"  Bugun kullanilan: {gemini_used} istek",
-    f"  Aktif model: {_ai_usage.get('gemini_last_model', 'henuz kullanilmadi')}",
-        f"  Kalan: ~{gemini_kalan} istek ({gemini_pct}%)",
+        f"🟣 GEMINI — {len(g_keys)}/3 key aktif",
+        f"  Bugun: {gemini_used} istek / {gemini_limit} limit ({gemini_pct}%)",
         f"  Doluluk: {gemini_bar}",
+        f"  Aktif model: {gemini_last_model}",
+    ] + g_key_satirlar + [
         f"  {gemini_hata}",
         "",
-        f"🟠 GROQ (Llama 3) — {groq_ok}",
-        f"  Bugun kullanilan: {groq_used} istek",
-        f"  Anlik kalan istek: {groq_rem_r}",
-        f"  Anlik kalan token: {groq_rem_t}",
+        f"🟠 GROQ — {len(_groq_keys())}/3 key aktif",
+        f"  Bugun: {groq_used} istek",
+        f"  Anlik kalan: {groq_rem_r} istek / {groq_rem_t} token",
         f"  Limit sifirlanma: {groq_rst_r}",
+    ] + gr_key_satirlar + [
         f"  {groq_hata}",
         "",
         "━━━━━━━━━━━━━━━━━━━",
-        "Limit: Her gece 00:00 (Gemini) / Dakika bazli (Groq)",
         f"Watchlist: {wl_count} hisse",
+        "Gemini gece 00:00 / Groq dakika bazli sifirlaniyor",
     ]
     msg = "\n".join(lines)
     bot.send_message(chat_id, msg)
@@ -2733,6 +3377,22 @@ def auto_scan():
                             print(f"kriz check hata: {e}")
                     threading.Thread(target=_kriz_check, daemon=True).start()
 
+            # Cuma 17:00 — Tam strateji taraması
+            is_friday = now.weekday() == 4  # 4 = Cuma
+            if is_friday and now.hour == 17 and now.minute < 10 and scanned_date != (now.date(), "cuma"):
+                scanned_date = (now.date(), "cuma")
+                ids = wl_all_ids()
+                print(f"[CUMA_TARA] Haftalık tam strateji taraması başlıyor — {len(ids)} kullanıcı")
+                for chat_id in ids:
+                    try:
+                        bot.send_message(chat_id,
+                            "📊 CUMA HAFTALIK STRATEJİ TARAMASI\n"
+                            "Tüm 16 strateji çalıştırılıyor...\n"
+                            "Tahmini süre: ~15-20 dk")
+                        threading.Thread(target=_tara_all, args=(chat_id,), daemon=True).start()
+                    except Exception as e:
+                        debug_log("ERROR", "cuma_tara", str(e)[:100])
+
             # 18:05 — Teknik tarama
             if now.hour == 18 and now.minute >= 5 and now.minute < 45 and scanned_date != now.date():
                 scanned_date = now.date()
@@ -2994,13 +3654,18 @@ if __name__ == "__main__":
     # Gemini kota durumunu DB'den yükle
     try:
         today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
-        quota_date = db_get("gemini_quota_exhausted")
-        if quota_date == today:
+        k1_doldu = db_get("gemini_quota_exhausted_1") == today
+        k2_doldu = db_get("gemini_quota_exhausted_2") == today
+        if k1_doldu:
+            print(f"[STARTUP] Gemini Key1 kotası bugün dolmuş")
             _ai_usage["gemini_quota_date"] = today
-            _ai_usage["gemini_last_error"] = "429 kota doldu (DB'den yüklendi)"
-            print(f"[STARTUP] Gemini kotası bugün dolmuş, Groq fallback aktif")
-        else:
-            print(f"[STARTUP] Gemini kotası normal")
+        if k2_doldu:
+            print(f"[STARTUP] Gemini Key2 kotası bugün dolmuş")
+        if k1_doldu and k2_doldu:
+            _ai_usage["gemini_last_error"] = "Her iki key kota doldu, Groq aktif"
+            print(f"[STARTUP] Her iki Gemini key'i tükenmiş, Groq fallback aktif")
+        elif not k1_doldu and not k2_doldu:
+            print(f"[STARTUP] Gemini keyleri normal")
     except Exception as e:
         print(f"Kota yükleme hata (devam ediliyor): {e}")
 
