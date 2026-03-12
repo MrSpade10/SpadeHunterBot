@@ -1320,23 +1320,42 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
 
 
 def _db_cached_today(ticker):
+    """Tek hisse cache kontrolü — _get_cached_tickers_today kullan, bu yavaş."""
+    return ticker in _get_cached_tickers_today()
+
+_cached_today_set = None
+_cached_today_date = None
+
+def _get_cached_tickers_today():
+    """Bugün cache'de olan TÜM tickerları tek sorguda çek — sonucu bellekte tut."""
+    global _cached_today_set, _cached_today_date
+    today = datetime.now(pytz.timezone('Europe/Istanbul')).date()
+    if _cached_today_set is not None and _cached_today_date == today:
+        return _cached_today_set
     if not DATABASE_URL:
-        return False
+        return set()
     conn = db_connect()
     if not conn:
-        return False
+        return set()
     try:
-        today = datetime.now(pytz.timezone('Europe/Istanbul')).date()
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT 1 FROM price_cache WHERE ticker IN (%s, %s) AND fetched_at=%s LIMIT 1",
-                (f"d:{ticker}", f"w:{ticker}", today)
+                "SELECT DISTINCT REPLACE(ticker, 'd:', '') FROM price_cache WHERE fetched_at=%s AND ticker LIKE 'd:%'",
+                (today,)
             )
-            return cur.fetchone() is not None
+            rows = cur.fetchall()
+        _cached_today_set = {r[0] for r in rows}
+        _cached_today_date = today
+        return _cached_today_set
     except Exception:
-        return False
+        return set()
     finally:
         conn.close()
+
+def _invalidate_cache_set():
+    """Yeni veri indirince cache setini sıfırla."""
+    global _cached_today_set
+    _cached_today_set = None
 
 
 def _run_optimize(chat_id, ticker):
@@ -1468,13 +1487,138 @@ def send_welcome(message):
         "/status — Bot sağlık durumu"
     )
 
+
+# ── /cachesil komutu ─────────────────────────────────────────
+@bot.message_handler(commands=['cachesil'])
+def cmd_cachesil(message):
+    chat_id = str(message.chat.id)
+    conn = db_connect()
+    if not conn:
+        bot.reply_to(message, "❌ DB bağlantısı kurulamadı."); return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM price_cache")
+            silinen = cur.rowcount
+        conn.commit()
+        _invalidate_cache_set()
+        bot.reply_to(message,
+            f"✅ Cache temizlendi — {silinen} kayıt silindi.\n"
+            f"Bir sonraki /check all veya /tara yeniden indirecek.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Hata: {e}")
+    finally:
+        conn.close()
+
+
+# ── /sira komutu ─────────────────────────────────────────────
+# Kullanım:
+#   /sira check all | tara all
+#   /sira cachesil | check all | tara all | tarasonuc
+# Komutlar | ile ayrılır, sırayla çalıştırılır.
+# Her komut bir önceki bitmeden başlamaz.
+
+_sira_running = {}  # chat_id → True/False
+
+SIRA_KOMUTLAR = {
+    "check all":    lambda cid: _run_check_all_sync(cid),
+    "tara all":     lambda cid: _tara_all(cid),
+    "cachesil":     lambda cid: _cachesil_sync(cid),
+    "optimizeall":  lambda cid: _run_optimizeall(cid),
+}
+
+def _cachesil_sync(chat_id):
+    conn = db_connect()
+    if not conn: return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM price_cache")
+            silinen = cur.rowcount
+        conn.commit()
+        _invalidate_cache_set()
+        bot.send_message(chat_id, f"✅ Cache temizlendi — {silinen} kayıt silindi.")
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ cachesil hata: {e}")
+    finally:
+        conn.close()
+
+def _run_check_all_sync(chat_id):
+    """scan_all_stocks'u sıra sistemi için çağır."""
+    tickers = wl_get(chat_id)
+    if not tickers:
+        bot.send_message(chat_id, "Watchlist boş."); return
+    scan_all_stocks(chat_id, tickers)
+
+def _run_sira(chat_id, komutlar):
+    _sira_running[chat_id] = True
+    toplam = len(komutlar)
+    bot.send_message(chat_id,
+        f"⚙️ SIRA BAŞLADI — {toplam} komut\n"
+        f"{chr(10).join([f'  {i+1}. {k}' for i,k in enumerate(komutlar)])}")
+    try:
+        for i, komut in enumerate(komutlar):
+            if not _sira_running.get(chat_id, False):
+                bot.send_message(chat_id, f"🚫 Sıra iptal edildi. ({i}/{toplam} tamamlandı)"); return
+            fn = SIRA_KOMUTLAR.get(komut)
+            if not fn:
+                bot.send_message(chat_id, f"⚠️ Bilinmeyen komut: '{komut}' — atlanıyor"); continue
+            bot.send_message(chat_id, f"▶️ [{i+1}/{toplam}] {komut} başlıyor...")
+            try:
+                fn(chat_id)
+                bot.send_message(chat_id, f"✅ [{i+1}/{toplam}] {komut} tamamlandı.")
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ [{i+1}/{toplam}] {komut} hata: {str(e)[:80]}")
+    finally:
+        _sira_running[chat_id] = False
+    bot.send_message(chat_id, f"🏁 Tüm sıra tamamlandı!")
+
+@bot.message_handler(commands=['sira'])
+def cmd_sira(message):
+    chat_id = str(message.chat.id)
+    metin = message.text.strip()
+    # /sira den sonrasını al
+    after = metin[len("/sira"):].strip()
+
+    if not after:
+        bot.reply_to(message,
+            "⚙️ SIRA KOMUTU\n"
+            "━━━━━━━━━━━━━━━━━━━\n"
+            "Kullanım: /sira komut1 | komut2 | komut3\n\n"
+            "Mevcut komutlar:\n"
+            "  check all   — tüm hisseleri tara\n"
+            "  tara all    — 16 strateji taraması\n"
+            "  cachesil    — cache temizle\n"
+            "  optimizeall — EMA optimizasyon\n\n"
+            "Örnek:\n"
+            "  /sira cachesil | check all | tara all\n"
+            "  /sira check all | tara all\n\n"
+            "İptal: /iptal sira"); return
+
+    if _sira_running.get(chat_id, False):
+        bot.reply_to(message, "⚠️ Zaten bir sıra çalışıyor.\n/iptal sira ile durdur."); return
+
+    # | ile böl, temizle
+    komutlar = [k.strip().lower() for k in after.split("|") if k.strip()]
+    gecersiz = [k for k in komutlar if k not in SIRA_KOMUTLAR]
+    if gecersiz:
+        bot.reply_to(message,
+            f"❌ Bilinmeyen komut(lar): {', '.join(gecersiz)}\n"
+            f"Geçerli komutlar: {', '.join(SIRA_KOMUTLAR.keys())}"); return
+
+    call_log("sira", chat_id, " | ".join(komutlar))
+    threading.Thread(target=_run_sira, args=(chat_id, komutlar), daemon=True).start()
+
 @bot.message_handler(commands=['iptal'])
+
 def iptal(message):
     chat_id = str(message.chat.id)
     parts   = message.text.strip().split()
     op      = parts[1].lower() if len(parts) > 1 else "check"
-    get_cancel_flag(chat_id, op).set()
-    bot.reply_to(message, f"🚫 '{op}' işlemi iptal sinyali gönderildi.")
+    if op == "sira":
+        _sira_running[chat_id] = False
+        bot.reply_to(message, "🚫 Sıra iptal edildi.")
+    else:
+        get_cancel_flag(chat_id, op).set()
+        bot.reply_to(message, f"🚫 '{op}' işlemi iptal sinyali gönderildi.")
 
 @bot.message_handler(commands=['optimizeall'])
 def optimizeall(message):
@@ -2077,6 +2221,7 @@ def tara_single_strategy(chat_id, tickers, kod):
             if is_cancelled(chat_id, "tara"):
                 bot.send_message(chat_id, "🚫 Tara iptal edildi."); return []
             get_data(ticker)  # Cache'e yaz
+            _invalidate_cache_set()  # Cache set'i sıfırla
             if (i+1) % 50 == 0:
                 bot.send_message(chat_id, f"📥 İndiriliyor: {i+1}/{len(missing)}")
             time.sleep(TD_DELAY)
