@@ -218,6 +218,19 @@ def db_set(key, value):
     finally:
         conn.close()
 
+def db_del(key):
+    conn = db_connect()
+    if not conn:
+        return
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM store WHERE key=%s", (key,))
+        conn.commit()
+    except Exception as e:
+        print(f"DB del hata: {e}")
+    finally:
+        conn.close()
+
 def pc_save(ticker, df):
     conn = db_connect()
     if not conn:
@@ -2969,6 +2982,21 @@ def cmd_haber(message):
     threading.Thread(target=_run_haber, args=(ticker,), daemon=True).start()
 
 # ── /kredi komutu ────────────────────────────────────────────
+@bot.message_handler(commands=['resetgemini'])
+def cmd_resetgemini(message):
+    """Gemini kota bayraklarını DB'den temizle — yeni key ekleyince kullan."""
+    chat_id = str(message.chat.id)
+    try:
+        db_del("gemini_quota_exhausted_1")
+        db_del("gemini_quota_exhausted_2")
+        db_del("gemini_quota_exhausted_3")
+        bot.reply_to(message,
+            "✅ Gemini kota bayrakları temizlendi!\n"
+            "Tüm keyler tekrar aktif sayılacak.\n"
+            "/kredi ile kontrol et.")
+    except Exception as e:
+        bot.reply_to(message, f"❌ Hata: {e}")
+
 @bot.message_handler(commands=['kredi'])
 def cmd_kredi(message):
     chat_id = str(message.chat.id)
