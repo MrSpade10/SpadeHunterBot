@@ -7,16 +7,7 @@ from datetime import datetime, timedelta
 import telebot
 import pandas as pd
 import numpy as np
-def find_peaks(arr, distance=5):
-    """scipy.signal.find_peaks yerine numpy implementasyonu."""
-    import numpy as np
-    arr = np.asarray(arr)
-    peaks = []
-    for i in range(1, len(arr)-1):
-        if arr[i] > arr[i-1] and arr[i] > arr[i+1]:
-            if not peaks or (i - peaks[-1]) >= distance:
-                peaks.append(i)
-    return np.array(peaks), {}
+from scipy.signal import find_peaks
 import requests
 from dotenv import load_dotenv
 import pytz
