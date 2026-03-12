@@ -1,0 +1,9 @@
+pyTelegramBotAPI
+flask
+pandas
+numpy
+scipy
+requests
+psycopg2-binary
+python-dotenv
+pytz
