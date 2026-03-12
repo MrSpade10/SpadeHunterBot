@@ -1,4 +1,5 @@
 import os
+import collections
 import time
 import json
 import threading
@@ -375,6 +376,7 @@ def _set_bot_commands():
         telebot.types.BotCommand("optimizeall",  "Tüm listeyi optimize et"),
         telebot.types.BotCommand("backup",       "Veriyi JSON olarak yedekle"),
         telebot.types.BotCommand("loadbackup",   "JSON yedekten geri yükle"),
+        telebot.types.BotCommand("kontrolbot",   "Tüm sistemleri test et ve hata bul"),
         telebot.types.BotCommand("status",       "Bot sağlık durumu"),
         telebot.types.BotCommand("iptal",        "İşlemi durdur: /iptal check"),
         telebot.types.BotCommand("help",         "Tüm komutları göster"),
@@ -1816,21 +1818,28 @@ def show_list(message):
 
 # ── RSS Haber Kaynakları ──────────────────────────────────────
 RSS_FEEDS = {
+    # Global piyasa haberleri
     "global": [
-        ("Reuters Piyasalar",    "https://feeds.reuters.com/reuters/businessNews"),
-        ("Reuters Top News",     "https://feeds.reuters.com/reuters/topNews"),
-        ("Investing Global",     "https://www.investing.com/rss/news.rss"),
+        ("Reuters İş Dünyası",   "https://feeds.reuters.com/reuters/businessNews"),
+        ("Reuters Genel",        "https://feeds.reuters.com/reuters/topNews"),
+        ("CNBC Piyasalar",       "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=15839135"),
         ("MarketWatch",          "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
+        ("Nasdaq Haberleri",     "https://www.nasdaq.com/feed/rssoutbound?category=Markets"),
     ],
+    # BIST & Türkiye ekonomi haberleri
     "bist": [
-        ("Investing TR",         "https://tr.investing.com/rss/news.rss"),
+        ("Google Borsa TR",      "https://news.google.com/rss/search?q=borsa+istanbul+BIST+hisse&hl=tr&gl=TR&ceid=TR:tr"),
+        ("Google Ekonomi TR",    "https://news.google.com/rss/search?q=türkiye+ekonomi+piyasa&hl=tr&gl=TR&ceid=TR:tr"),
+        ("Google TCMB",         "https://news.google.com/rss/search?q=TCMB+merkez+bankası+faiz&hl=tr&gl=TR&ceid=TR:tr"),
         ("Bloomberg HT",         "https://www.bloomberght.com/rss"),
-        ("Ekonomim",             "https://www.ekonomim.com/rss/rss.xml"),
-        ("Para Analiz",          "https://www.paraanaliz.com/feed/"),
+        ("Dünya Gazetesi",       "https://www.dunya.com/rss/anasayfa.xml"),
     ],
+    # Makro ekonomi - Fed, faiz, dolar
     "macro": [
-        ("TCMB Duyurular",       "https://www.tcmb.gov.tr/wps/wcm/connect/tcmb+tr/tcmb+tr/rss/duyurular.rss"),
-        ("Investing Ekonomi",    "https://tr.investing.com/rss/economic_indicators.rss"),
+        ("Google Fed Faiz",      "https://news.google.com/rss/search?q=fed+interest+rate+inflation&hl=en&gl=US&ceid=US:en"),
+        ("Google Dolar TL",      "https://news.google.com/rss/search?q=dolar+türk+lirası+kur&hl=tr&gl=TR&ceid=TR:tr"),
+        ("Google Petrol Altın",  "https://news.google.com/rss/search?q=oil+gold+price+markets&hl=en&gl=US&ceid=US:en"),
+        ("Reuters Piyasa",       "https://feeds.reuters.com/reuters/businessNews"),
     ]
 }
 
@@ -1917,6 +1926,7 @@ def safe_send(chat_id, text, parse_mode='Markdown'):
 _ai_usage = {
     "gemini_today": 0,
     "gemini_date": "",
+    "gemini_last_model": "henuz kullanilmadi",
     "groq_today": 0,
     "groq_date": "",
     "groq_remaining_req": "?",
@@ -1935,26 +1945,41 @@ def _ai_count(service):
         _ai_usage[f"{service}_date"] = today
     _ai_usage[f"{service}_today"] += 1
 
+# Sırayla denenecek Gemini modelleri (en güncel önce)
+GEMINI_MODELS = [
+    "gemini-2.0-flash-lite",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-001",
+]
+
 def gemini_ask(prompt, max_tokens=600):
-    """Gemini'ye istek gönder, metin cevabı döndür."""
+    """Gemini'ye istek gönder — birden fazla modeli sırayla dene."""
     if not GEMINI_KEY:
         return "⚠️ GEMINI_KEY tanımlı değil."
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4}
     }
-    try:
-        resp = requests.post(url, json=payload, timeout=20)
-        resp.raise_for_status()
-        data = resp.json()
-        _ai_count("gemini")
-        _ai_usage["gemini_last_error"] = None
-        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-    except Exception as e:
-        _ai_usage["gemini_last_error"] = str(e)[:100]
-        print(f"Gemini hata: {e}")
-        return f"⚠️ Gemini yanıt vermedi: {str(e)[:80]}"
+    last_err = ""
+    for model in GEMINI_MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
+        try:
+            resp = requests.post(url, json=payload, timeout=20)
+            if resp.status_code == 404:
+                print(f"Gemini model bulunamadı: {model}, sıradaki deneniyor...")
+                continue
+            resp.raise_for_status()
+            data = resp.json()
+            _ai_count("gemini")
+            _ai_usage["gemini_last_model"] = model
+            _ai_usage["gemini_last_error"] = None
+            return data["candidates"][0]["content"]["parts"][0]["text"].strip()
+        except Exception as e:
+            last_err = str(e)
+            print(f"Gemini hata ({model}): {e}")
+            continue
+    _ai_usage["gemini_last_error"] = last_err[:100]
+    return f"⚠️ Gemini yanıt vermedi: {last_err[:80]}"
 
 def gemini_analyze_signal(ticker, signals, rsi_d, rsi_w, close_price, ema_d, ema_w):
     """Bir hisse için Gemini analizi: yorum + destek/direnç + karakter."""
@@ -2010,39 +2035,42 @@ def groq_ask(prompt, max_tokens=800, model="llama-3.1-8b-instant"):
         return resp.json()["choices"][0]["message"]["content"].strip()
     except Exception as e:
         _ai_usage["groq_last_error"] = str(e)[:100]
-        print(f"Groq hata: {e}")
+        debug_log("ERROR", "groq_ask", str(e)[:150], traceback.format_exc()[:300])
         return f"⚠️ Groq yanıt vermedi: {str(e)[:80]}"
 
 def groq_news_summary(news_text, context="genel piyasa"):
     """Groq ile haber özetle ve yorum yap."""
-    prompt = f"""Sen BIST ve global piyasalarda uzman bir analistsin. Aşağıdaki haberleri analiz et.
+    prompt = f"""Sen BIST ve global piyasalarda uzman bir analistsin. Aşağıdaki haberleri analiz et ve BIST yatırımcısı için net sinyal ver.
 
 Konu: {context}
 Haberler:
 {news_text}
 
-Lütfen Türkçe olarak şu formatta yanıt ver:
+Türkçe yanıt ver. Her satır emoji ile başlasın. Al/Sat/Bekle önerisini net belirt:
 
-📰 ÖZET: (2-3 cümle — en önemli gelişme)
-📈 PİYASA ETKİSİ: (BIST'e etkisi pozitif/negatif/nötr — neden)
-⚠️ RİSK: (varsa önemli risk faktörü)
-💡 YATIRIMCI İÇİN: (kısa pratik not)"""
+📰 ÖZET: (en önemli 1-2 gelişme, kısa)
+📊 BIST ETKİSİ: 🟢 POZİTİF / 🔴 NEGATİF / ⚪ NÖTR — (1 cümle neden)
+⚡ SİNYAL: 🟢 AL FIRSATI / 🔴 SAT / ⏸ BEKLE — (kısa gerekçe)
+⚠️ RİSK: (varsa — yoksa "Risk görünmüyor")
+💡 TAKTİK: (yatırımcı bugün ne yapmalı, 1 cümle)"""
 
-    return groq_ask(prompt, max_tokens=400)
+    return groq_ask(prompt, max_tokens=350)
 
 def groq_ticker_news(ticker, news_text):
     """Belirli bir hisse için haber yorumu."""
-    prompt = f"""BIST'te işlem gören {ticker} hissesiyle ilgili haberler:
+    prompt = f"""BIST'te işlem gören {ticker} hissesi için haber analizi yap. Yatırımcıya net AL/SAT/BEKLE önerisi ver.
 
+Haberler:
 {news_text}
 
-Türkçe, kısa ve net yanıt ver:
+Türkçe, kısa ve net. Emojilerle:
 
-📰 ÖNEMLİ HABERLER: (en önemli 1-2 haber özeti)
-📊 HİSSEYE ETKİSİ: (pozitif/negatif/nötr — neden)
-⚡ SONUÇ: (yatırımcının bilmesi gereken 1 şey)"""
+📰 HABER: (en kritik gelişme — 1-2 cümle)
+📊 ETKİ: 🟢 POZİTİF / 🔴 NEGATİF / ⚪ NÖTR — (kısa neden)
+⚡ ÖNERİ: 🟢 AL / 🔴 SAT / ⏸ BEKLE — (kısa gerekçe)
+💡 NOT: (dikkat edilmesi gereken 1 şey)"""
 
-    return groq_ask(prompt, max_tokens=300)
+    return groq_ask(prompt, max_tokens=280)
 
 def groq_crisis_check(news_text):
     """Global kriz haberi var mı? Alarm üret."""
@@ -2070,6 +2098,7 @@ Kritik haber varsa:
 def cmd_analiz(message):
     chat_id = str(message.chat.id)
     parts = message.text.strip().split()
+    call_log("analiz", chat_id, parts[1] if len(parts)>1 else "")
     if len(parts) < 2:
         bot.reply_to(message, "Kullanım: /analiz THYAO"); return
     ticker = parts[1].upper().replace(".IS","")
@@ -2127,38 +2156,46 @@ def cmd_analiz(message):
 def cmd_haber(message):
     chat_id = str(message.chat.id)
     parts = message.text.strip().split()
+    call_log("haber", chat_id, parts[1] if len(parts)>1 else "genel")
 
     if not GROQ_KEY:
         bot.reply_to(message, "❌ GROQ_KEY tanımlı değil. Render'a ekleyin."); return
 
     def _run_haber(ticker=None):
         try:
+            now_str = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')
+
             if ticker:
-                # Tek hisse haberi
+                # ── Tek hisse haberi ──
                 bot.send_message(chat_id, f"📰 *{ticker}* için haberler çekiliyor...")
-                # Hem global hem BIST'ten çek, ticker ile filtrele
                 all_news = collect_news(["global","bist"], max_per_feed=8, ticker=ticker)
+                genel = False
                 if not all_news:
-                    # Ticker'a özel haber yoksa genel BIST haberleri
                     all_news = collect_news(["bist"], max_per_feed=5)
-                    context = f"{ticker} hissesi (doğrudan haber bulunamadı, genel BIST haberleri)"
-                else:
-                    context = f"{ticker} hissesi"
+                    genel = True
+
+                # Ham haberleri önce ayrı ayrı gönder
+                bot.send_message(chat_id,
+                    f"📋 *{ticker} — {'Genel BIST' if genel else 'İlgili'} Haberler*",
+                    parse_mode='Markdown')
+                for n in all_news[:5]:
+                    safe_send(chat_id,
+                        f"📌 *{n['source']}*\n{n['title']}\n_{n['desc'][:120] if n.get('desc') else ''}..._")
+                    time.sleep(0.3)
+
+                # Sonra AI yorumu
+                time.sleep(0.5)
                 news_text = news_to_text(all_news, max_items=8)
                 yorum = groq_ticker_news(ticker, news_text)
-                msg = (
-                    f"📰 *{ticker} — Haber Analizi*\n"
+                safe_send(chat_id,
+                    f"🤖 *{ticker} — AI Yorumu*\n"
                     f"━━━━━━━━━━━━━━━━━━━\n"
                     f"{yorum}\n"
-                    f"━━━━━━━━━━━━━━━━━━━\n"
-                    f"🕐 {datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%d.%m.%Y %H:%M')}"
-                )
-                safe_send(chat_id, msg)
+                    f"🕐 {now_str}")
 
             else:
-                # Bugünkü sinyal hisseleri için haberler + global haberler
+                # ── Genel haber taraması ──
                 today_key = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d')
-                # DB'den bugünkü sinyalleri al
                 signal_tickers = []
                 try:
                     conn = db_connect()
@@ -2172,40 +2209,61 @@ def cmd_haber(message):
                 except Exception:
                     pass
 
-                # Global + BIST haberleri
-                bot.send_message(chat_id, "📡 Haberler çekiliyor...", parse_mode='Markdown')
-                global_news = collect_news(["global","macro"], max_per_feed=5)
-                bist_news   = collect_news(["bist"], max_per_feed=5)
+                bot.send_message(chat_id, "📡 Haberler çekiliyor, sırayla geliyor...")
+                time.sleep(0.5)
 
-                # Kriz kontrolü
-                crisis = groq_crisis_check(news_to_text(global_news, 10))
-                if crisis:
-                    bot.send_message(chat_id,
-                        f"🚨 *GLOBAL KRİZ ALARMI*\n━━━━━━━━━━━━━━━━━━━\n{crisis}",
-                        parse_mode='Markdown')
+                # ── BIST Haberleri (önce) ──
+                bist_news = collect_news(["bist"], max_per_feed=4)
+                if bist_news:
+                    bot.send_message(chat_id, "📊 *BIST & Türkiye Ekonomi Haberleri*", parse_mode='Markdown')
+                    for n in bist_news[:4]:
+                        safe_send(chat_id,
+                            f"🇹🇷 *{n['source']}*\n{n['title']}\n_{n['desc'][:100] if n.get('desc') else ''}..._")
+                        time.sleep(0.3)
+                    time.sleep(0.5)
+                    bist_yorum = groq_news_summary(news_to_text(bist_news, 6), "BIST ve Türk piyasaları")
+                    safe_send(chat_id, f"🤖 *BIST Yorumu*\n━━━━━━━━━━━━━━━━━━━\n{bist_yorum}")
                     time.sleep(1)
 
-                # Global özet
-                global_yorum = groq_news_summary(news_to_text(global_news, 8), "global piyasalar")
-                safe_send(chat_id, f"🌍 *Global Piyasa Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{global_yorum}")
-                time.sleep(1)
+                # ── Global Haberler ──
+                global_news = collect_news(["global"], max_per_feed=4)
+                macro_news  = collect_news(["macro"],  max_per_feed=3)
+                all_global  = global_news + macro_news
 
-                # BIST haberleri özeti
-                bist_yorum = groq_news_summary(news_to_text(bist_news, 8), "BIST ve Türk piyasaları")
-                safe_send(chat_id, f"📊 *BIST Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{bist_yorum}")
-                time.sleep(1)
+                if all_global:
+                    bot.send_message(chat_id, "🌍 *Global Piyasa & Makro Haberler*", parse_mode='Markdown')
+                    for n in all_global[:5]:
+                        safe_send(chat_id,
+                            f"🌐 *{n['source']}*\n{n['title']}\n_{n['desc'][:100] if n.get('desc') else ''}..._")
+                        time.sleep(0.3)
+                    time.sleep(0.5)
 
-                # Sinyal çıkan hisseler için haber
+                    # Kriz kontrolü
+                    crisis = groq_crisis_check(news_to_text(all_global, 8))
+                    if crisis:
+                        safe_send(chat_id, f"🚨 *GLOBAL KRİZ ALARMI*\n━━━━━━━━━━━━━━━━━━━\n{crisis}")
+                        time.sleep(0.5)
+
+                    global_yorum = groq_news_summary(news_to_text(all_global, 6), "global piyasalar, Fed, dolar, petrol")
+                    safe_send(chat_id, f"🤖 *Global Yorum*\n━━━━━━━━━━━━━━━━━━━\n{global_yorum}")
+                    time.sleep(1)
+
+                # ── Sinyal hisseleri ──
                 if signal_tickers:
                     bot.send_message(chat_id,
                         f"🔍 *{len(signal_tickers)} sinyal hissesi için haberler...*",
                         parse_mode='Markdown')
-                    for t in signal_tickers[:10]:  # Max 10 hisse
-                        ticker_news = collect_news(["global","bist"], max_per_feed=6, ticker=t)
+                    time.sleep(0.3)
+                    for t in signal_tickers[:8]:
+                        ticker_news = collect_news(["global","bist"], max_per_feed=5, ticker=t)
                         if ticker_news:
-                            yorum = groq_ticker_news(t, news_to_text(ticker_news, 5))
-                            safe_send(chat_id, f"📰 *{t} Haberleri*\n━━━━━━━━━━━━━━━━━━━\n{yorum}")
-                            time.sleep(0.5)
+                            bot.send_message(chat_id, f"📰 *{t}*", parse_mode='Markdown')
+                            for n in ticker_news[:2]:
+                                safe_send(chat_id, f"  • {n['title']}")
+                                time.sleep(0.2)
+                            yorum = groq_ticker_news(t, news_to_text(ticker_news, 4))
+                            safe_send(chat_id, f"🤖 *{t} Yorumu*\n{yorum}")
+                            time.sleep(0.8)
                 else:
                     bot.send_message(chat_id,
                         "💡 Bugün henüz tarama yapılmadı. Önce /check all çalıştır.")
@@ -2239,33 +2297,271 @@ def cmd_kredi(message):
     groq_rst_r  = _ai_usage.get("groq_reset_req", "?")
     groq_err    = _ai_usage.get("groq_last_error")
 
-    msg = (
-        f"🤖 *AI Kredi & Kullanım Durumu*\n"
-        f"🕐 {now_str}\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"\n"
-        f"🟣 *GEMINI* (Google AI) — {gemini_ok}\n"
-        f"├ Plan: Ücretsiz\n"
-        f"├ Günlük limit: {gemini_limit} istek\n"
-        f"├ Bugün kullanılan: {gemini_used}\n"
-        f"├ Kalan: ~{gemini_kalan} istek\n"
-        f"├ Doluluk: {gemini_bar} %{int(gemini_used/gemini_limit*100)}\n"
-        f"└ {'⚠️ Son hata: ' + gemini_err if gemini_err else '✅ Hata yok'}\n"
-        f"\n"
-        f"🟠 *GROQ* (Llama 3) — {groq_ok}\n"
-        f"├ Plan: Ücretsiz\n"
-        f"├ Bugün kullanılan: {groq_used} istek\n"
-        f"├ Anlık kalan istek: {groq_rem_r}\n"
-        f"├ Anlık kalan token: {groq_rem_t}\n"
-        f"├ Limit sıfırlama: {groq_rst_r}\n"
-        f"└ {'⚠️ Son hata: ' + groq_err if groq_err else '✅ Hata yok'}\n"
-        f"\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
-        f"💡 Limit sıfırlanma: Her gece 00:00 (Gemini) / Dakika bazlı (Groq)\n"
-        f"📊 Günlük tahmini kullanım: ~{len(wl_get(chat_id) or [])} hisse × 1 = {len(wl_get(chat_id) or [])} istek"
-    )
+    # Hata satırlarını ayrı değişkenlere al (f-string içinde koşul sorun çıkarır)
+    gemini_hata = f"⚠️ Son hata: {gemini_err}" if gemini_err else "✅ Hata yok"
+    groq_hata   = f"⚠️ Son hata: {groq_err}"   if groq_err   else "✅ Hata yok"
+    gemini_pct  = int(gemini_used / gemini_limit * 100) if gemini_limit > 0 else 0
+    wl_count    = len(wl_get(chat_id) or [])
 
-    bot.send_message(chat_id, msg, parse_mode='Markdown')
+    lines = [
+        "🤖 AI Kredi & Kullanım Durumu",
+        f"🕐 {now_str}",
+        "━━━━━━━━━━━━━━━━━━━",
+        "",
+        f"🟣 GEMINI (Google AI) — {gemini_ok}",
+        f"  Plan: Ucretsiz | Gunluk limit: {gemini_limit}",
+        f"  Bugun kullanilan: {gemini_used} istek",
+    f"  Aktif model: {_ai_usage.get('gemini_last_model', 'henuz kullanilmadi')}",
+        f"  Kalan: ~{gemini_kalan} istek ({gemini_pct}%)",
+        f"  Doluluk: {gemini_bar}",
+        f"  {gemini_hata}",
+        "",
+        f"🟠 GROQ (Llama 3) — {groq_ok}",
+        f"  Bugun kullanilan: {groq_used} istek",
+        f"  Anlik kalan istek: {groq_rem_r}",
+        f"  Anlik kalan token: {groq_rem_t}",
+        f"  Limit sifirlanma: {groq_rst_r}",
+        f"  {groq_hata}",
+        "",
+        "━━━━━━━━━━━━━━━━━━━",
+        "Limit: Her gece 00:00 (Gemini) / Dakika bazli (Groq)",
+        f"Watchlist: {wl_count} hisse",
+    ]
+    msg = "\n".join(lines)
+    bot.send_message(chat_id, msg)
+
+
+# ── Hata Günlüğü (benim için — Claude debug sistemi) ─────────
+import traceback, collections
+
+_debug_log = collections.deque(maxlen=30)   # Son 30 olay
+_call_log  = collections.deque(maxlen=20)   # Son 20 komut çağrısı
+
+def debug_log(seviye, kaynak, mesaj, extra=None):
+    """Her önemli olayı kaydet. Seviye: INFO / WARN / ERROR / CRASH"""
+    tr_tz = pytz.timezone('Europe/Istanbul')
+    zaman = datetime.now(tr_tz).strftime('%H:%M:%S')
+    girdi = {
+        "t": zaman,
+        "lvl": seviye,
+        "src": kaynak,
+        "msg": mesaj[:300],
+        "extra": str(extra)[:200] if extra else None
+    }
+    _debug_log.append(girdi)
+    if seviye in ("ERROR","CRASH"):
+        print(f"[{seviye}] {kaynak}: {mesaj}")
+
+def call_log(komut, chat_id, params=""):
+    """Komut çağrısını kaydet."""
+    tr_tz = pytz.timezone('Europe/Istanbul')
+    zaman = datetime.now(tr_tz).strftime('%H:%M:%S')
+    _call_log.append({"t": zaman, "cmd": komut, "uid": str(chat_id)[-4:], "p": params[:40]})
+
+# ── /kontrolbot komutu ───────────────────────────────────────
+@bot.message_handler(commands=['kontrolbot'])
+def cmd_kontrolbot(message):
+    chat_id = str(message.chat.id)
+    call_log("kontrolbot", chat_id)
+    bot.send_message(chat_id, "🔬 Tanılama başlıyor — Claude için detaylı rapor hazırlanıyor...")
+
+    def _run_kontrol():
+        sonuclar = []   # (sistem_adi, ok, detay, tam_hata)
+        tr_tz = pytz.timezone('Europe/Istanbul')
+
+        def test(ad, fn):
+            try:
+                ok, detay, tam = fn()
+            except Exception as e:
+                ok, detay, tam = False, str(e)[:120], traceback.format_exc()
+            sonuclar.append((ad, ok, detay, tam))
+            debug_log("INFO" if ok else "ERROR", f"kontrolbot/{ad}", detay)
+
+        # ══ 1. TELEGRAM ══
+        def t_telegram():
+            info = bot.get_me()
+            wh   = bot.get_webhook_info()
+            wh_url = wh.url[-35:] if wh.url else "BOŞ — polling modu"
+            pending = wh.pending_update_count
+            return True, f"@{info.username} | Webhook: {wh_url} | Kuyruk: {pending}", None
+        test("Telegram + Webhook", t_telegram)
+
+        # ══ 2. VERİTABANI ══
+        def t_db():
+            if not DATABASE_URL:
+                return False, "DATABASE_URL YOK → Render ENV eksik", None
+            conn = db_connect()
+            if not conn:
+                return False, "Bağlantı kurulamadı → DB silinmiş/kapalı olabilir", None
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM store")
+                store_count = cur.fetchone()[0]
+                cur.execute("SELECT COUNT(*) FROM price_cache") if True else None
+            conn.close()
+            return True, f"store: {store_count} kayıt | Bağlantı: OK", None
+        test("PostgreSQL", t_db)
+
+        # ══ 3. WATCHLİST ══
+        def t_wl():
+            wl = wl_get(chat_id)
+            if not wl:
+                return False, "Liste boş → /addall yap", None
+            return True, f"{len(wl)} hisse | Örnek: {', '.join(wl[:3])}", None
+        test("Watchlist", t_wl)
+
+        # ══ 4. YAHOO FİNANCE ══
+        def t_yahoo():
+            df_d, df_w = get_data("THYAO")
+            if df_d is None or df_d.empty:
+                return False, "THYAO verisi gelmedi → Yahoo erişim sorunu", \
+                       "get_data('THYAO') boş DataFrame döndürdü"
+            son_fiyat = df_d['Close'].iloc[-1]
+            son_tarih = str(df_d.index[-1])[:10]
+            return True, f"THYAO {son_fiyat:.2f} TL | {len(df_d)} günlük veri | Son: {son_tarih}", None
+        test("Yahoo Finance", t_yahoo)
+
+        # ══ 5. GEMİNİ API ══
+        def t_gemini():
+            if not GEMINI_KEY:
+                return False, "GEMINI_KEY YOK → Render ENV'e ekle", None
+            calisan_model = None
+            hatalar = []
+            for model in GEMINI_MODELS:
+                url = (f"https://generativelanguage.googleapis.com/v1beta"
+                       f"/models/{model}:generateContent?key={GEMINI_KEY}")
+                payload = {
+                    "contents": [{"parts": [{"text": "1+1=?"}]}],
+                    "generationConfig": {"maxOutputTokens": 5, "temperature": 0}
+                }
+                try:
+                    r = requests.post(url, json=payload, timeout=12)
+                    if r.status_code == 200:
+                        calisan_model = model
+                        yanit = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                        return True, f"Model: {model} | Yanıt: '{yanit}' | Key: ...{GEMINI_KEY[-6:]}", None
+                    elif r.status_code == 404:
+                        hatalar.append(f"{model}→404(model yok)")
+                    elif r.status_code == 403:
+                        err = r.json().get("error",{}).get("message","")[:60]
+                        return False, f"403 API KEY GEÇERSİZ veya kota doldu: {err}", \
+                               f"HTTP 403 on {model}: {r.text[:300]}"
+                    elif r.status_code == 429:
+                        return False, "429 GÜNLÜK KOTA DOLDU (1500 istek/gün)", \
+                               f"HTTP 429: {r.text[:200]}"
+                    else:
+                        hatalar.append(f"{model}→{r.status_code}")
+                except Exception as e:
+                    hatalar.append(f"{model}→{type(e).__name__}:{str(e)[:40]}")
+            return False, f"Tüm modeller başarısız: {' | '.join(hatalar)}", \
+                   "\n".join(hatalar)
+        test("Gemini API", t_gemini)
+
+        # ══ 6. GROQ API ══
+        def t_groq():
+            if not GROQ_KEY:
+                return False, "GROQ_KEY YOK → Render ENV'e ekle", None
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {"Authorization": f"Bearer {GROQ_KEY}", "Content-Type": "application/json"}
+            payload = {"model": "llama-3.1-8b-instant",
+                       "messages": [{"role":"user","content":"1+1=?"}], "max_tokens": 5}
+            r = requests.post(url, json=payload, headers=headers, timeout=12)
+            if r.status_code == 401:
+                return False, "401 GROQ KEY GEÇERSİZ → Yeni key al", \
+                       f"HTTP 401: {r.text[:200]}"
+            if r.status_code == 429:
+                rst = r.headers.get("x-ratelimit-reset-requests","?")
+                return False, f"429 RATE LIMIT — {rst} sonra sıfırlanır", \
+                       f"HTTP 429: {r.text[:200]}"
+            r.raise_for_status()
+            yanit = r.json()["choices"][0]["message"]["content"].strip()
+            rem_r = r.headers.get("x-ratelimit-remaining-requests","?")
+            rem_t = r.headers.get("x-ratelimit-remaining-tokens","?")
+            return True, f"Yanıt: '{yanit}' | Kalan: {rem_r} istek / {rem_t} token | Key: ...{GROQ_KEY[-6:]}", None
+        test("Groq API", t_groq)
+
+        # ══ 7. RSS KAYNAKLARI ══
+        def t_rss():
+            calisan, bozuk = [], []
+            for cat, feedler in RSS_FEEDS.items():
+                for name, url in feedler:
+                    items = fetch_rss(url, max_items=1, timeout=5)
+                    if items:
+                        calisan.append(name)
+                    else:
+                        bozuk.append(f"{name}({cat})")
+            if not calisan:
+                return False, f"HİÇBİR KAYNAK ÇALIŞMIYOR: {', '.join(bozuk[:4])}", \
+                       f"Bozuk: {bozuk}"
+            ok = len(calisan) >= len(bozuk)
+            detay = f"{len(calisan)} aktif / {len(bozuk)} bozuk"
+            if bozuk:
+                detay += f" | Bozuk: {', '.join(bozuk[:3])}"
+            return ok, detay, f"Aktif: {calisan}\nBozuk: {bozuk}" if bozuk else None
+        test("RSS Kaynakları", t_rss)
+
+        # ══ RAPOR OLUŞTUR ══
+        tr_tz = pytz.timezone('Europe/Istanbul')
+        simdi = datetime.now(tr_tz).strftime('%d.%m.%Y %H:%M:%S')
+        hatali = [(a,d,t) for a,ok,d,t in sonuclar if not ok]
+        tamam  = [(a,d)   for a,ok,d,t in sonuclar if ok]
+
+        # — Özet mesajı (herkese okunabilir) —
+        ozet = [f"🔬 KONTROLBOT — {simdi}", ""]
+        for ad, ok, detay, _ in sonuclar:
+            ozet.append(f"{'✅' if ok else '❌'} {ad}: {detay}")
+        ozet += ["",
+                 f"{'🟢 TÜM SİSTEMLER NORMAL' if not hatali else f'🔴 {len(hatali)} SORUN BULUNDU'}",
+                 f"Uptime: {str(datetime.now(tr_tz) - _bot_start_time).split('.')[0]}"]
+        bot.send_message(chat_id, "\n".join(ozet))
+
+        # — Claude için detaylı debug raporu (sadece hata varsa) —
+        if hatali:
+            debug_mesajlar = [
+                "━━━━━━━━━━━━━━━━━━━",
+                "🤖 CLAUDE DEBUG RAPORU",
+                "Aşağıdakileri kopyalayıp Claude'a yapıştır:",
+                "━━━━━━━━━━━━━━━━━━━", ""
+            ]
+
+            for ad, detay, tam_hata in hatali:
+                debug_mesajlar.append(f"[HATA] {ad}")
+                debug_mesajlar.append(f"Mesaj: {detay}")
+                if tam_hata:
+                    debug_mesajlar.append(f"Detay: {tam_hata[:400]}")
+                debug_mesajlar.append("")
+
+            # Son 10 debug log olayı
+            debug_mesajlar.append("[SON OLAYLAR]")
+            for g in list(_debug_log)[-10:]:
+                satir = f"{g['t']} [{g['lvl']}] {g['src']}: {g['msg']}"
+                if g.get('extra'):
+                    satir += f" | {g['extra']}"
+                debug_mesajlar.append(satir)
+
+            # Son 5 komut çağrısı
+            debug_mesajlar.append("")
+            debug_mesajlar.append("[SON KOMUTLAR]")
+            for c in list(_call_log)[-5:]:
+                debug_mesajlar.append(f"{c['t']} /{c['cmd']} uid:..{c['uid']} {c['p']}")
+
+            # Konfigürasyon snapshot
+            debug_mesajlar += [
+                "",
+                "[KONFİGÜRASYON]",
+                f"GEMINI_KEY: {'SET (..'+GEMINI_KEY[-4:]+')' if GEMINI_KEY else 'MISSING'}",
+                f"GROQ_KEY: {'SET (..'+GROQ_KEY[-4:]+')' if GROQ_KEY else 'MISSING'}",
+                f"DATABASE_URL: {'SET' if DATABASE_URL else 'MISSING'}",
+                f"RENDER_URL: {RENDER_URL[-30:] if RENDER_URL else 'MISSING'}",
+                f"Gemini modelleri: {GEMINI_MODELS}",
+                f"Aktif Gemini model: {_ai_usage.get('gemini_last_model','henuz yok')}",
+                f"Bugün Gemini: {_ai_usage.get('gemini_today',0)} istek",
+                f"Bugün Groq: {_ai_usage.get('groq_today',0)} istek",
+            ]
+
+            bot.send_message(chat_id, "\n".join(debug_mesajlar))
+
+    threading.Thread(target=_run_kontrol, daemon=True).start()
+
 
 # ── /bulten komutu ───────────────────────────────────────────
 @bot.message_handler(commands=['bulten'])
@@ -2273,6 +2569,7 @@ def cmd_bulten(message):
     chat_id = str(message.chat.id)
     parts = message.text.strip().split()
     tip = parts[1].lower() if len(parts) > 1 else "sabah"
+    call_log("bulten", chat_id, tip)
 
     if not GROQ_KEY:
         bot.reply_to(message, "❌ GROQ_KEY tanımlı değil."); return
@@ -2394,13 +2691,21 @@ def auto_scan():
                     threading.Thread(target=_kriz_check, daemon=True).start()
 
             # 18:05 — Teknik tarama
-            if now.hour == 18 and now.minute >= 5 and now.minute < 10 and scanned_date != now.date():
+            if now.hour == 18 and now.minute >= 5 and now.minute < 45 and scanned_date != now.date():
                 scanned_date = now.date()
-                for chat_id in wl_all_ids():
+                ids = wl_all_ids()
+                print(f"[AUTO_SCAN] 18:05 taraması başlıyor — {len(ids)} kullanıcı")
+                for chat_id in ids:
                     try:
+                        bot.send_message(chat_id,
+                            f"🕕 *18:05 Otomatik Tarama Başladı*\n"
+                            f"📋 Watchlist taranıyor...\n"
+                            f"🚫 Durdurmak için: /iptal check",
+                            parse_mode='Markdown')
                         scan_all_stocks(chat_id)
                     except Exception as e:
                         print(f"auto_scan hisse hata {chat_id}: {e}")
+                        debug_log("ERROR", "auto_scan", str(e)[:150])
 
             # 18:30 — Akşam bülteni (tarama bittikten sonra)
             if now.hour == 18 and now.minute >= 30 and now.minute < 35 and bulten_a_date != now.date():
@@ -2558,7 +2863,6 @@ def watchdog():
 
 def global_exception_handler(exc_type, exc_value, exc_traceback):
     """Yakalanmamış tüm exception'ları loglar."""
-    import traceback
     global _error_count, _last_error, _last_error_time
     _error_count    += 1
     _last_error      = str(exc_value)
