@@ -231,6 +231,42 @@ def db_del(key):
     finally:
         conn.close()
 
+
+def tara_save(chat_id, kod, eslesen, ai_yorum=""):
+    """Tara sonuçlarını DB'ye kaydet."""
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    simdi = datetime.now(tr_tz).strftime("%d.%m.%Y %H:%M")
+    veri = {
+        "tarih": simdi,
+        "eslesen": [e["ticker"].replace(".IS","") for e in eslesen],
+        "detay": [
+            {
+                "ticker": e["ticker"].replace(".IS",""),
+                "rsi": round(e.get("rsi") or 0, 1),
+                "rel_vol": round(e.get("rel_vol") or 0, 2),
+                "perf_1d": round(e.get("perf_1d") or 0, 2),
+                "perf_5d": round(e.get("perf_5d") or 0, 2),
+                "perf_21d": round(e.get("perf_21d") or 0, 2),
+            }
+            for e in eslesen
+        ],
+        "ai_yorum": ai_yorum,
+    }
+    db_set(f"tara_sonuc_{chat_id}_{kod}", veri)
+    # Özet tablosunu da güncelle
+    ozet = db_get(f"tara_ozet_{chat_id}", {})
+    isim, _ = TARA_STRATEJILER.get(kod, (kod, ""))
+    ozet[kod] = {"isim": isim, "tarih": simdi, "sayi": len(eslesen)}
+    db_set(f"tara_ozet_{chat_id}", ozet)
+
+def tara_load(chat_id, kod):
+    """Tek strateji sonucunu DB'den yükle."""
+    return db_get(f"tara_sonuc_{chat_id}_{kod}")
+
+def tara_load_ozet(chat_id):
+    """Tüm stratejilerin özet tablosunu yükle."""
+    return db_get(f"tara_ozet_{chat_id}", {})
+
 def pc_save(ticker, df):
     conn = db_connect()
     if not conn:
@@ -2219,18 +2255,22 @@ def _tara_single(chat_id, kod):
         bot.send_message(chat_id, mesaj)
 
         # AI yorumu
+        yorum_txt = ""
         if top5:
             bot.send_message(chat_id, "AI analiz yapıyor...")
             try:
-                yorum = tara_ai_yorum(kod, top5)
-                if yorum:
-                    bot.send_message(chat_id, f"AI YORUMU\n━━━━━━━━━━━━━━━━━━━\n{yorum}")
+                yorum_txt = tara_ai_yorum(kod, top5) or ""
+                if yorum_txt:
+                    bot.send_message(chat_id, f"AI YORUMU\n━━━━━━━━━━━━━━━━━━━\n{yorum_txt}")
             except Exception as e:
                 debug_log("ERROR", "tara_ai_yorum", str(e)[:100])
                 bot.send_message(chat_id, f"AI yorum hatasi: {str(e)[:60]}")
 
+        # DB'ye kaydet
+        tara_save(chat_id, kod, eslesen, yorum_txt)
+
         simdi = datetime.now(tr_tz).strftime("%H:%M")
-        bot.send_message(chat_id, f"Tarama tamamlandi ({simdi}) — {len(eslesen)} eslesme")
+        bot.send_message(chat_id, f"Tarama tamamlandi ({simdi}) — {len(eslesen)} eslesme\n/tarasonuc {kod} ile tekrar goruntule")
 
     except Exception as e:
         debug_log("ERROR", "_tara_single", str(e)[:150])
@@ -2272,6 +2312,9 @@ def _tara_all(chat_id):
 
         ozet_satirlar.append(f"{isim}: {len(eslesen)} hisse")
 
+        # DB'ye kaydet
+        tara_save(chat_id, kod, eslesen)
+
         # Her strateji için AI yorumu (eşleşme varsa)
         if top5:
             try:
@@ -2297,6 +2340,78 @@ def _tara_all(chat_id):
     bot.send_message(chat_id, "\n".join(ozet_satirlar))
     bot.send_message(chat_id, "✅ Tüm stratejiler tamamlandı!")
 
+
+@bot.message_handler(commands=['tarasonuc'])
+def cmd_tarasonuc(message):
+    chat_id = str(message.chat.id)
+    parts = message.text.strip().split()
+    call_log("tarasonuc", chat_id, parts[1] if len(parts) > 1 else "ozet")
+
+    if len(parts) < 2:
+        # Özet — tüm stratejilerin son tarama sonucu
+        ozet = tara_load_ozet(chat_id)
+        if not ozet:
+            bot.reply_to(message,
+                "Henüz tarama yapılmamış.\n"
+                "/tara 1 veya /tara all ile tarama başlat."); return
+
+        satirlar = ["📊 SON TARAMA SONUÇLARI", ""]
+        for kod in sorted(ozet.keys()):
+            veri = ozet[kod]
+            isim = veri.get("isim", kod)
+            tarih = veri.get("tarih", "?")
+            sayi = veri.get("sayi", 0)
+            emoji = "🟢" if sayi > 0 else "⬜"
+            satirlar.append(f"{emoji} /{kod} — {isim}: {sayi} hisse ({tarih})")
+
+        satirlar += ["", "Detay için: /tarasonuc 2  veya  /tarasonuc A"]
+        bot.reply_to(message, "\n".join(satirlar))
+
+    else:
+        # Tek strateji detayı
+        kod = parts[1].upper()
+        if kod not in TARA_STRATEJILER:
+            bot.reply_to(message, f"Geçersiz strateji: {kod}\nKodlar: 1-14, A, B, C"); return
+
+        veri = tara_load(chat_id, kod)
+        if not veri:
+            bot.reply_to(message,
+                f"Strateji {kod} için kayıtlı sonuç yok.\n"
+                f"/tara {kod} ile tarama yap."); return
+
+        isim, aciklama = TARA_STRATEJILER[kod]
+        tarih = veri.get("tarih", "?")
+        detay = veri.get("detay", [])
+        ai_yorum = veri.get("ai_yorum", "")
+
+        satirlar = [
+            f"📊 {isim}",
+            f"{aciklama}",
+            f"Tarama: {tarih} — {len(detay)} eşleşme",
+            "━━━━━━━━━━━━━━━━━━━",
+        ]
+
+        if not detay:
+            satirlar.append("Bu kritere uyan hisse bulunamadı.")
+        else:
+            for e in detay[:20]:
+                t    = e.get("ticker","?")
+                rsi  = e.get("rsi", 0)
+                rv   = e.get("rel_vol", 0)
+                p1d  = e.get("perf_1d", 0)
+                p5d  = e.get("perf_5d", 0)
+                p21d = e.get("perf_21d", 0)
+                satirlar.append(
+                    f"{t} | RSI:{rsi:.0f} | RV:{rv:.1f}x | "
+                    f"G:{'+' if p1d>0 else ''}{p1d:.1f}% "
+                    f"H:{'+' if p5d>0 else ''}{p5d:.1f}% "
+                    f"A:{'+' if p21d>0 else ''}{p21d:.1f}%"
+                )
+
+        if ai_yorum:
+            satirlar += ["", "━━━━━━━━━━━━━━━━━━━", "🤖 AI YORUMU", ai_yorum]
+
+        bot.reply_to(message, "\n".join(satirlar))
 
 @bot.message_handler(commands=['check'])
 def manual_check(message):
