@@ -1,0 +1,13 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Önce sadece requirements kopyala — bu layer cache'lenir
+# requirements.txt değişmezse pip install tekrar çalışmaz
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Sonra bot kodunu kopyala
+COPY bot.py .
+
+CMD ["python", "bot.py"]
