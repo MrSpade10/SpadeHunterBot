@@ -1934,6 +1934,7 @@ _ai_usage = {
     "groq_reset_req": "?",
     "groq_reset_tokens": "?",
     "gemini_last_error": None,
+    "gemini_quota_date": "",   # 429 yaşanan tarih (DB'den yüklenir)
     "groq_last_error": None,
 }
 
@@ -1953,14 +1954,21 @@ GEMINI_MODELS = [
 ]
 
 def gemini_ask(prompt, max_tokens=600):
-    """Gemini'ye istek gönder — birden fazla modeli sırayla dene."""
+    """Gemini'ye istek gönder — 429/hata durumunda Groq'a fallback."""
     if not GEMINI_KEY:
+        # Gemini key yoksa direkt Groq dene
+        if GROQ_KEY:
+            _ai_usage["gemini_last_model"] = "groq-fallback(no-key)"
+            return groq_ask(prompt, max_tokens)
         return "⚠️ GEMINI_KEY tanımlı değil."
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.4}
     }
     last_err = ""
+    kota_doldu = False
+
     for model in GEMINI_MODELS:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_KEY}"
         try:
@@ -1968,6 +1976,21 @@ def gemini_ask(prompt, max_tokens=600):
             if resp.status_code == 404:
                 print(f"Gemini model bulunamadı: {model}, sıradaki deneniyor...")
                 continue
+            if resp.status_code == 429:
+                kota_doldu = True
+                last_err = "429 kota doldu"
+                print(f"Gemini 429 kota — Groq fallback devreye giriyor")
+                # DB'ye kaydet (restart'ta da hatırlasın)
+                today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+                try:
+                    db_set("gemini_quota_exhausted", today)
+                except Exception:
+                    pass
+                _ai_usage["gemini_quota_date"] = today
+                break   # Diğer modelleri deneme, hepsi aynı kotayı kullanır
+            if resp.status_code == 403:
+                last_err = f"403 API key geçersiz"
+                break
             resp.raise_for_status()
             data = resp.json()
             _ai_count("gemini")
@@ -1978,7 +2001,19 @@ def gemini_ask(prompt, max_tokens=600):
             last_err = str(e)
             print(f"Gemini hata ({model}): {e}")
             continue
+
+    # Gemini başarısız — Groq fallback
+    if GROQ_KEY:
+        print(f"Gemini başarısız ({last_err}), Groq fallback deneniyor...")
+        _ai_usage["gemini_last_model"] = f"groq-fallback({'kota' if kota_doldu else 'hata'})"
+        _ai_usage["gemini_last_error"] = last_err[:100]
+        groq_yanit = groq_ask(prompt, max_tokens)
+        if not groq_yanit.startswith("⚠️"):
+            return "[Groq]\n" + groq_yanit
+        return groq_yanit
+
     _ai_usage["gemini_last_error"] = last_err[:100]
+    debug_log("ERROR", "gemini_ask", f"Tüm modeller başarısız", last_err[:200])
     return f"⚠️ Gemini yanıt vermedi: {last_err[:80]}"
 
 def gemini_analyze_signal(ticker, signals, rsi_d, rsi_w, close_price, ema_d, ema_w):
@@ -2298,7 +2333,15 @@ def cmd_kredi(message):
     groq_err    = _ai_usage.get("groq_last_error")
 
     # Hata satırlarını ayrı değişkenlere al (f-string içinde koşul sorun çıkarır)
-    gemini_hata = f"⚠️ Son hata: {gemini_err}" if gemini_err else "✅ Hata yok"
+    # Kota durumu kontrolü
+    today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+    quota_date = _ai_usage.get("gemini_quota_date", "")
+    if quota_date == today:
+        gemini_hata = "🔴 GÜNLÜK KOTA DOLDU — Groq fallback aktif (gece 00:00'da sıfırlanır)"
+    elif gemini_err:
+        gemini_hata = f"⚠️ Son hata: {gemini_err}"
+    else:
+        gemini_hata = "✅ Hata yok"
     groq_hata   = f"⚠️ Son hata: {groq_err}"   if groq_err   else "✅ Hata yok"
     gemini_pct  = int(gemini_used / gemini_limit * 100) if gemini_limit > 0 else 0
     wl_count    = len(wl_get(chat_id) or [])
@@ -2947,6 +2990,19 @@ if __name__ == "__main__":
         db_init()
     except Exception as e:
         print(f"DB init hata (devam ediliyor): {e}")
+
+    # Gemini kota durumunu DB'den yükle
+    try:
+        today = datetime.now(pytz.timezone("Europe/Istanbul")).strftime("%Y-%m-%d")
+        quota_date = db_get("gemini_quota_exhausted")
+        if quota_date == today:
+            _ai_usage["gemini_quota_date"] = today
+            _ai_usage["gemini_last_error"] = "429 kota doldu (DB'den yüklendi)"
+            print(f"[STARTUP] Gemini kotası bugün dolmuş, Groq fallback aktif")
+        else:
+            print(f"[STARTUP] Gemini kotası normal")
+    except Exception as e:
+        print(f"Kota yükleme hata (devam ediliyor): {e}")
 
     # Webhook kur — başarısız olsa da devam et
     try:
