@@ -1944,7 +1944,7 @@ def perf_pct(series, days):
     """Son N iş günü performans %."""
     if len(series) < days + 1:
         return None
-    return (series.iloc[-1] - series.iloc[-days]) / series.iloc[-days] * 100
+    return (series.iloc[-1] - series.iloc[-(days+1)]) / series.iloc[-(days+1)] * 100
 
 def tara_indicators(ticker):
     """
@@ -2061,24 +2061,23 @@ def strateji_filtre(ind, kod):
 
     if kod == "1":   # Smart Money Birikim
         return (gt(price, p["sma200"] or 0) and
-                near(price, p["sma50"], 5) and
-                between(p["rsi"], 40, 65) and
+                near(price, p["sma50"], 8) and
+                between(p["rsi"], 35, 70) and
                 gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["rel_vol"], 1.3) and
-                p["bb_width_low"] and
-                between(p["perf_5d"], 0, 5) and
-                gt(p["perf_21d"], 10))
+                gt(p["rel_vol"], 1.1) and
+                between(p["perf_5d"], -2, 8) and
+                gt(p["perf_21d"], 5))
 
     elif kod == "2": # Düşen Trend Kırılımı
         return (gt(price, p["sma20"] or 0) and
                 gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 50, 70) and
+                between(p["rsi"], 45, 78) and
                 gt(p["macd"], p["macd_sig"] or -999) and
                 gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["rel_vol"], 1.3) and
-                gt(p["perf_1d"], 2) and
-                gt(p["perf_5d"], 5) and
-                lt(p["perf_21d"], 10))
+                gt(p["rel_vol"], 1.1) and
+                gt(p["perf_1d"], 1) and
+                gt(p["perf_5d"], 3) and
+                lt(p["perf_21d"], 15))
 
     elif kod == "3": # Güçlü Dipten Dönüş
         rsi_cross_up = (p["rsi"] is not None and p["rsi_prev"] is not None and
