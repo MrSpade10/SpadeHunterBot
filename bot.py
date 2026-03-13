@@ -1452,40 +1452,54 @@ def _run_optimizeall(chat_id):
 # ═══════════════════════════════════════════════
 @bot.message_handler(commands=['start', 'help'])
 def send_welcome(message):
-    bot.reply_to(message,
+    metin = (
         "📊 *BIST Teknik Analiz Botu*\n\n"
-        "*── Tarama ──*\n"
+        "🔍 *── Strateji Tarama ──*\n"
+        "/tara 1 — Tek strateji tara\n"
+        "/tara 1,2,A — Birden fazla strateji\n"
+        "/tara all — Tüm 17 stratejiyi tara ⭐\n"
+        "/tarasonuc — Son tarama özetini gör\n"
+        "/tarasonuc 2 — Strateji 2 detayı + AI yorum\n\n"
+        "📈 *── EMA/RSI Tarama ──*\n"
         "/check all — Tüm listeyi tara ⭐\n"
         "/check THYAO — Tek hisse analiz\n"
-        "/check 50 — Rastgele 50 hisse\n"
-        "/checksingle THYAO — Detaylı debug çıktısı\n\n"
-        "*── Sinyaller ──*\n"
+        "/check 50 — Rastgele 50 hisse\n\n"
+        "📡 *── Sinyaller ──*\n"
         "/sinyal al — Bugünkü AL sinyalleri 🟢\n"
         "/sinyal sat — Bugünkü SAT sinyalleri 🔴\n\n"
-        "*── AI Analiz & Haberler ──*\n"
-        "/analiz THYAO — Gemini: yorum + destek/direnç 🤖\n"
+        "🤖 *── AI Analiz & Haberler ──*\n"
+        "/analiz THYAO — Gemini: yorum + destek/direnç\n"
         "/haber — Sinyal hisselerinin haberleri 📰\n"
         "/haber THYAO — Tek hisse haberleri\n"
         "/bulten sabah — Sabah piyasa bülteni 🌅\n"
         "/bulten aksam — Akşam kapanış bülteni 🌆\n\n"
-        "*── Liste Yönetimi ──*\n"
+        "⚡ *── Sıralı Komut ──*\n"
+        "/sira cachesil|check all|tara all\n\n"
+        "📋 *── Liste Yönetimi ──*\n"
         "/addall — BIST hisselerini ekle (527 hisse)\n"
-        "/refreshlist — Yahoo'dan güncel tam listeyi çek ve ekle ⭐\n"
+        "/refreshlist — Yahoo'dan güncel listeyi çek ⭐\n"
         "/add THYAO — Tek hisse ekle\n"
         "/remove THYAO — Tek hisse çıkar\n"
         "/watchlist — İzleme listeni gör\n\n"
-        "*── Optimize ──*\n"
+        "🔧 *── Optimize ──*\n"
         "/optimize THYAO — Tek hisse EMA optimize\n"
-        "/optimizeall — Tüm listeyi optimize et (haftalık çalıştır)\n\n"
-        "*── İptal ──*\n"
-        "/iptal check — Taramayı durdur\n"
-        "/iptal optimize — Tek optimize durdur\n"
-        "/iptal optimizeall — Toplu optimize durdur\n\n"
-        "*── Yedek / Geri Yükleme ──*\n"
-        "/backup — Tüm veriyi JSON olarak yedekle 💾\n"
+        "/optimizeall — Tüm listeyi optimize et\n\n"
+        "🛠 *── Sistem ──*\n"
+        "/kontrolbot — Sistem sağlık testi\n"
+        "/status — Bot özet durumu\n"
+        "/kredi — AI kota durumu (Gemini/Groq)\n"
+        "/cachesil — Fiyat önbelleğini temizle\n"
+        "/resetgemini — Gemini kota bayraklarını sıfırla\n\n"
+        "🚫 *── İptal ──*\n"
+        "/iptal tara — Strateji taramayı durdur\n"
+        "/iptal check — EMA taramayı durdur\n"
+        "/iptal sira — Sıralı işlemi durdur\n"
+        "/iptal optimize — Optimize durdur\n\n"
+        "💾 *── Yedek ──*\n"
+        "/backup — Veriyi JSON olarak yedekle 💾\n"
         "/loadbackup — JSON yedekten geri yükle 📂\n"
-        "/status — Bot sağlık durumu"
     )
+    bot.reply_to(message, metin, parse_mode="Markdown")
 
 
 # ── /cachesil komutu ─────────────────────────────────────────
@@ -1944,7 +1958,11 @@ def perf_pct(series, days):
     """Son N iş günü performans %."""
     if len(series) < days + 1:
         return None
-    return (series.iloc[-1] - series.iloc[-(days+1)]) / series.iloc[-(days+1)] * 100
+    base = series.iloc[-(days+1)]
+    if base == 0 or pd.isna(base):
+        return None
+    result = (series.iloc[-1] - base) / base * 100
+    return None if pd.isna(result) else float(result)
 
 def tara_indicators(ticker):
     """
@@ -1957,10 +1975,19 @@ def tara_indicators(ticker):
 
     d = df_d.copy()
     close  = d["Close"]
+    high   = d["High"]
+    low    = d["Low"]
     volume = d["Volume"]
+    open_  = d["Open"] if "Open" in d.columns else close
 
     # ── Fiyat ──
     price = float(close.iloc[-1])
+
+    # ── Kapanış > Açılış ──
+    _close_last = close.iloc[-1]
+    _open_last  = open_.iloc[-1]
+    kapanis_yukari = (not pd.isna(_close_last) and not pd.isna(_open_last) and
+                      float(_close_last) > float(_open_last))
 
     # ── SMA ──
     sma20  = calc_sma(close, 20)
@@ -1971,16 +1998,42 @@ def tara_indicators(ticker):
     s200 = float(sma200.iloc[-1]) if not sma200.isna().iloc[-1] else None
 
     # ── RSI ──
-    rsi_s = calc_rsi(close, 14).dropna()
-    rsi   = float(rsi_s.iloc[-1]) if len(rsi_s) > 1 else None
-    rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) > 2 else None
+    rsi_s    = calc_rsi(close, 14).dropna()
+    rsi      = float(rsi_s.iloc[-1])  if len(rsi_s) >= 1 else None
+    rsi_prev = float(rsi_s.iloc[-2])  if len(rsi_s) >= 2 else None
+    # RSI son 3 günde yukarı kesiyor mu (30 altından 30 üstüne veya sürekli artış)
+    rsi_yukari_3g = (len(rsi_s) >= 3 and
+                     float(rsi_s.iloc[-1]) > float(rsi_s.iloc[-2]) > float(rsi_s.iloc[-3]))
 
-    # ── MACD ──
-    macd_line, macd_sig = calc_macd(close)
-    macd_val  = float(macd_line.iloc[-1])  if not macd_line.isna().iloc[-1]  else None
-    macd_sig_val = float(macd_sig.iloc[-1]) if not macd_sig.isna().iloc[-1] else None
-    macd_prev = float(macd_line.iloc[-2])   if len(macd_line) > 2 else None
-    macd_sig_prev = float(macd_sig.iloc[-2]) if len(macd_sig) > 2 else None
+    # ── MACD + Histogram ──
+    macd_line, macd_sig_line = calc_macd(close)
+    macd_val      = float(macd_line.iloc[-1])      if not macd_line.isna().iloc[-1]      else None
+    macd_sig_val  = float(macd_sig_line.iloc[-1])  if not macd_sig_line.isna().iloc[-1]  else None
+    macd_prev     = (float(macd_line.iloc[-2])
+                      if len(macd_line) >= 2 and not pd.isna(macd_line.iloc[-2])
+                      else None)
+    macd_sig_prev = (float(macd_sig_line.iloc[-2])
+                     if len(macd_sig_line) >= 2 and not pd.isna(macd_sig_line.iloc[-2])
+                     else None)
+
+    # MACD Histogram = MACD - Sinyal
+    if macd_val is not None and macd_sig_val is not None:
+        hist_cur  = macd_val - macd_sig_val
+        hist_prev = (macd_prev - macd_sig_prev) if (macd_prev is not None and macd_sig_prev is not None) else None
+        macd_hist_pozitif  = hist_cur > 0
+        macd_hist_artiyor  = hist_prev is not None and hist_cur > hist_prev
+        # Histogram pozitifleşiyor = önceki negatif, şimdi pozitif
+        macd_hist_pozitif_kesim = (hist_prev is not None and hist_prev <= 0 and hist_cur > 0)
+    else:
+        hist_cur = None
+        macd_hist_pozitif = False
+        macd_hist_artiyor = False
+        macd_hist_pozitif_kesim = False
+
+    # MACD yeni yukarı kesişim (son 1 günde)
+    macd_fresh_cross = (macd_val is not None and macd_sig_val is not None and
+                        macd_prev is not None and macd_sig_prev is not None and
+                        macd_val > macd_sig_val and macd_prev <= macd_sig_prev)
 
     # ── ADX ──
     adx_s = calc_adx(d)
@@ -1989,37 +2042,60 @@ def tara_indicators(ticker):
     # ── Bollinger Band Genişliği ──
     bb_width_s = calc_bollinger_width(close)
     bb_width   = float(bb_width_s.iloc[-1]) if not bb_width_s.isna().iloc[-1] else None
-    # "Düşük" = son değer 20 günlük ortalamanın altında
-    bb_low_threshold = float(bb_width_s.rolling(20).mean().iloc[-1]) if len(bb_width_s) > 20 else None
-    bb_width_low = (bb_width is not None and bb_low_threshold is not None and
-                    bb_width < bb_low_threshold)
+    # bb_width_low_20: son değer 20g ortalamasının altında
+    _bb_avg20_raw = bb_width_s.rolling(20).mean().iloc[-1]
+    bb_avg20 = (float(_bb_avg20_raw)
+                if len(bb_width_s) > 20 and not pd.isna(_bb_avg20_raw)
+                else None)
+    bb_width_low = (bb_width is not None and bb_avg20 is not None and bb_width < bb_avg20)
+    # bb_width_low_60: son değer 60g ortalamasının %70'inden az (Strateji 1 ve 10)
+    bb_avg60_raw = bb_width_s.rolling(60).mean().iloc[-1]
+    bb_avg60 = (float(bb_avg60_raw) if (len(bb_width_s) > 60 and not pd.isna(bb_avg60_raw))
+                else bb_avg20)
+    bb_width_low60 = (bb_width is not None and bb_avg60 is not None and bb_avg60 > 0 and
+                      bb_width < bb_avg60 * 0.70)
+    bb_width_low65 = (bb_width is not None and bb_avg60 is not None and bb_avg60 > 0 and
+                      bb_width < bb_avg60 * 0.65)
+
+    # ── VWAP (günlük yaklaşım: 20 günlük ağırlıklı ortalama) ──
+    typical_price = (high + low + close) / 3
+    vwap_num  = (typical_price * volume).rolling(20).sum()
+    vwap_den  = volume.rolling(20).sum()
+    vwap_s    = vwap_num / vwap_den.replace(0, float("nan"))
+    vwap_raw  = vwap_s.iloc[-1]
+    vwap      = float(vwap_raw) if (vwap_raw is not None and not pd.isna(vwap_raw)) else None
+    price_above_vwap = (vwap is not None and price > vwap)
 
     # ── Hacim ──
-    vol_avg20 = float(volume.rolling(20).mean().iloc[-1])
-    vol_cur   = float(volume.iloc[-1])
+    vol_avg20_raw = volume.rolling(20).mean().iloc[-1]
+    vol_avg20 = float(vol_avg20_raw) if not pd.isna(vol_avg20_raw) else 0.0
+    vol_cur   = float(volume.iloc[-1]) if not pd.isna(volume.iloc[-1]) else 0.0
     rel_vol   = vol_cur / vol_avg20 if vol_avg20 > 0 else 0
 
     # ── Performans ──
-    perf_1d  = perf_pct(close, 1)
-    perf_5d  = perf_pct(close, 5)   # ~haftalık
-    perf_21d = perf_pct(close, 21)  # ~aylık
-    perf_63d = perf_pct(close, 63)  # ~3 aylık
-    perf_252d = perf_pct(close, 252) # ~1 yıllık
-
-    # ── MACD yeni yukarı kesişim ──
-    macd_fresh_cross = (macd_val is not None and macd_sig_val is not None and
-                        macd_prev is not None and macd_sig_prev is not None and
-                        macd_val > macd_sig_val and macd_prev <= macd_sig_prev)
+    perf_1d   = perf_pct(close, 1)
+    perf_5d   = perf_pct(close, 5)    # ~haftalık
+    perf_21d  = perf_pct(close, 21)   # ~aylık
+    perf_63d  = perf_pct(close, 63)   # ~3 aylık
+    perf_252d = perf_pct(close, 252)  # ~1 yıllık
 
     return {
         "ticker": ticker,
         "price": price,
+        "kapanis_yukari": kapanis_yukari,
         "sma20": s20, "sma50": s50, "sma200": s200,
-        "rsi": rsi, "rsi_prev": rsi_prev,
+        "rsi": rsi, "rsi_prev": rsi_prev, "rsi_yukari_3g": rsi_yukari_3g,
         "macd": macd_val, "macd_sig": macd_sig_val,
         "macd_fresh_cross": macd_fresh_cross,
+        "macd_hist_pozitif": macd_hist_pozitif,
+        "macd_hist_artiyor": macd_hist_artiyor,
+        "macd_hist_pozitif_kesim": macd_hist_pozitif_kesim,
         "adx": adx,
-        "bb_width": bb_width, "bb_width_low": bb_width_low,
+        "bb_width": bb_width,
+        "bb_width_low": bb_width_low,
+        "bb_width_low60": bb_width_low60,
+        "bb_width_low65": bb_width_low65,
+        "vwap": vwap, "price_above_vwap": price_above_vwap,
         "vol_avg20": vol_avg20, "vol_cur": vol_cur, "rel_vol": rel_vol,
         "perf_1d": perf_1d, "perf_5d": perf_5d,
         "perf_21d": perf_21d, "perf_63d": perf_63d, "perf_252d": perf_252d,
@@ -2044,6 +2120,7 @@ TARA_STRATEJILER = {
     "A":  ("💪 Piyasadan Güçlü",        "Relative strength — endekstten üstün"),
     "B":  ("💸 Büyük Para Girişi",      "Günlük trade fırsatı"),
     "C":  ("🛡️ Endeks Düşerken Güçlü", "Düşen piyasada ayakta kalan hisseler"),
+    "15": ("📊 Bilançodan Önce Hareket", "Güçlü büyüme + teknik uyum"),
 }
 
 def strateji_filtre(ind, kod):
@@ -2051,156 +2128,208 @@ def strateji_filtre(ind, kod):
     Verilen gösterge sözlüğünü strateji koduna göre filtrele.
     True dönerse hisse bu stratejiye giriyor demektir.
     """
-    p = ind
+    p     = ind
     price = p["price"]
 
-    def gt(val, thr): return val is not None and val > thr
-    def lt(val, thr): return val is not None and val < thr
-    def between(val, lo, hi): return val is not None and lo <= val <= hi
-    def near(val, ref, pct): return val is not None and ref is not None and abs(val - ref) / ref * 100 <= pct
+    def gt(val, thr):
+        return val is not None and val > thr
+    def lt(val, thr):
+        return val is not None and val < thr
+    def between(val, lo, hi):
+        return val is not None and lo <= val <= hi
+    def near(val, ref, pct):
+        return val is not None and ref is not None and abs(val - ref) / ref * 100 <= pct
 
-    if kod == "1":   # Smart Money Birikim
+    if kod == "1":   # Smart Money ve Patlama Öncesi Birikim
         return (gt(price, p["sma200"] or 0) and
-                near(price, p["sma50"], 8) and
-                between(p["rsi"], 35, 70) and
-                gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["rel_vol"], 1.1) and
-                between(p["perf_5d"], -2, 8) and
-                gt(p["perf_21d"], 5))
+                near(price, p["sma50"], 5) and
+                between(p["rsi"], 40, 68) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["rel_vol"], 1.8) and
+                p["bb_width_low60"] and
+                between(p["perf_5d"], 0, 6) and
+                gt(p["perf_21d"], 11) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"] and
+                p["kapanis_yukari"] and
+                p["macd_hist_artiyor"])
 
-    elif kod == "2": # Düşen Trend Kırılımı
+    elif kod == "2": # Düşen Trend Kırılımı ve Yeni Yükseliş Başlangıcı
         return (gt(price, p["sma20"] or 0) and
                 gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 45, 78) and
-                gt(p["macd"], p["macd_sig"] or -999) and
-                gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["rel_vol"], 1.1) and
-                gt(p["perf_1d"], 1) and
-                gt(p["perf_5d"], 3) and
-                lt(p["perf_21d"], 15))
+                between(p["rsi"], 50, 74) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                p["macd_hist_pozitif"] and
+                p["macd_hist_artiyor"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["rel_vol"], 1.8) and
+                gt(p["perf_1d"], 2) and
+                gt(p["perf_5d"], 5) and
+                lt(p["perf_21d"], 11) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"] and
+                p["rsi_yukari_3g"])
 
-    elif kod == "3": # Güçlü Dipten Dönüş
-        rsi_cross_up = (p["rsi"] is not None and p["rsi_prev"] is not None and
-                        p["rsi"] > 30 and p["rsi_prev"] <= 30)
-        return (lt(p["rsi"], 40) and
-                rsi_cross_up and
+    elif kod == "3": # Güçlü Dip ve Destekten Dönüş
+        rsi3_yukari = (p["rsi"] is not None and p["rsi_prev"] is not None and
+                       p["rsi"] > p["rsi_prev"])
+        return (lt(p["rsi"], 45) and
+                rsi3_yukari and
                 gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], p["vol_avg20"]) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["rel_vol"], 1.8) and
                 gt(p["perf_1d"], 2) and
                 lt(p["perf_5d"], 0) and
-                lt(p["perf_21d"], 0))
+                lt(p["perf_21d"], 0) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"] and
+                p["macd_hist_pozitif_kesim"])
 
-    elif kod == "4": # Momentum Patlaması
+    elif kod == "4": # Momentum Patlaması ve Sert Yükseliş
         return (gt(price, p["sma50"] or 0) and
                 gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 55, 70) and
-                gt(p["macd"], p["macd_sig"] or -999) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
-                gt(p["rel_vol"], 1.5) and
+                between(p["rsi"], 56, 74) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                p["macd_hist_pozitif"] and
+                p["macd_hist_artiyor"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2.0) and
+                gt(p["rel_vol"], 1.9) and
                 gt(p["perf_5d"], 8) and
-                gt(p["perf_21d"], 15))
+                gt(p["perf_21d"], 13) and
+                gt(p["adx"], 28))
 
-    elif kod == "6": # Tavan Serisi
+    elif kod == "6": # Tavan Serisi Başlatabilecek Hisseler
         return (gt(price, p["sma20"] or 0) and
                 gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 60, 80) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
-                gt(p["rel_vol"], 2) and
+                between(p["rsi"], 64, 82) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2.2) and
+                gt(p["rel_vol"], 2.2) and
                 gt(p["perf_1d"], 5) and
-                gt(p["perf_5d"], 15) and
-                gt(p["perf_21d"], 30) and
-                gt(p["adx"], 30))
+                gt(p["perf_5d"], 16) and
+                gt(p["perf_21d"], 26) and
+                gt(p["adx"], 32) and
+                p["macd_hist_artiyor"] and
+                p["price_above_vwap"])
 
-    elif kod == "7": # Akümülasyon Çıkışı
+    elif kod == "7": # Akümülasyon Çıkışı ve Büyük Hareket Başlangıcı
         return (gt(price, p["sma50"] or 0) and
                 gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 55, 70) and
+                between(p["rsi"], 54, 70) and
                 p["macd_fresh_cross"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
-                gt(p["rel_vol"], 1.5) and
+                p["macd_hist_pozitif"] and
+                p["macd_hist_artiyor"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.9) and
+                gt(p["rel_vol"], 1.8) and
                 gt(p["perf_1d"], 3) and
-                gt(p["perf_5d"], 8) and
-                between(p["perf_21d"], 0, 10))
+                gt(p["perf_5d"], 9) and
+                between(p["perf_21d"], 0, 11) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"])
 
     elif kod == "8": # Erken Trend Doğumu
         return (gt(price, p["sma20"] or 0) and
                 gt(price, p["sma50"] or 0) and
                 gt(p["sma20"] or 0, p["sma50"] or 0) and
-                between(p["rsi"], 50, 65) and
-                gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["rel_vol"], 1.3) and
-                between(p["perf_5d"], 0, 6) and
-                between(p["perf_21d"], 0, 12))
+                between(p["rsi"], 48, 66) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["rel_vol"], 1.8) and
+                between(p["perf_5d"], 0, 7) and
+                between(p["perf_21d"], 0, 13) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"])
 
-    elif kod == "9": # Kurumsal Para Girişi
+    elif kod == "9": # Kurumsal Para Girişi (Gizli Toplama)
         return (gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 45, 60) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
-                gt(p["rel_vol"], 1.7) and
-                between(p["perf_5d"], 0, 6) and
-                between(p["perf_21d"], 5, 20))
+                between(p["rsi"], 44, 62) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.9) and
+                gt(p["rel_vol"], 1.9) and
+                between(p["perf_5d"], 0, 7) and
+                between(p["perf_21d"], 6, 22) and
+                gt(p["adx"], 25) and
+                p["price_above_vwap"] and
+                p["macd_hist_pozitif"])
 
-    elif kod == "10": # Güçlü Konsolidasyon
+    elif kod == "10": # Güçlü Konsolidasyon ve Sıkışma
         return (near(price, p["sma50"], 5) and
-                between(p["rsi"], 40, 55) and
-                between(p["perf_1d"], -1, 1) and
-                between(p["perf_5d"], -3, 3) and
-                lt(p["vol_cur"], p["vol_avg20"]))
+                between(p["rsi"], 38, 56) and
+                between(p["perf_1d"], -1.5, 1.5) and
+                between(p["perf_5d"], -4, 4) and
+                lt(p["vol_cur"], (p["vol_avg20"] or 0) * 0.7) and
+                p["bb_width_low65"] and
+                lt(p["adx"], 20))
 
     elif kod == "11": # Volatilite Patlaması
         return (gt(price, p["sma20"] or 0) and
-                gt(p["rsi"], 55) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
-                gt(p["rel_vol"], 2) and
+                gt(p["rsi"], 56) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2.2) and
+                gt(p["rel_vol"], 2.2) and
                 gt(p["perf_1d"], 3) and
-                gt(p["perf_5d"], 8))
+                gt(p["perf_5d"], 9) and
+                gt(p["adx"], 28) and
+                p["price_above_vwap"])
 
-    elif kod == "12": # Sektör Lideri
+    elif kod == "12": # Sektör Lideri ve Güçlü Hisseler
         return (gt(price, p["sma50"] or 0) and
                 gt(price, p["sma200"] or 0) and
-                gt(p["rsi"], 60) and
-                gt(p["perf_5d"], 10) and
-                gt(p["perf_21d"], 20) and
-                gt(p["perf_63d"], 35))
+                gt(p["rsi"], 59) and
+                gt(p["perf_5d"], 11) and
+                gt(p["perf_21d"], 19) and
+                gt(p["perf_63d"], 32) and
+                gt(p["adx"], 26))
 
     elif kod == "13": # Dipten Lider Doğuşu
-        return (lt(p["perf_252d"], -30) and
-                lt(p["rsi"], 40) and
+        return (lt(p["perf_252d"], -28) and
+                lt(p["rsi"], 43) and
                 gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], p["vol_avg20"]) and
-                gt(p["perf_1d"], 2))
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["perf_1d"], 2) and
+                gt(p["rel_vol"], 1.8) and
+                gt(p["adx"], 22))
 
-    elif kod == "14": # Büyük Ralli
+    elif kod == "14": # Büyük Ralli ve %50+ Potansiyel
         return (gt(price, p["sma50"] or 0) and
                 gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 60, 78) and
-                gt(p["adx"], 30) and
-                gt(p["macd"], p["macd_sig"] or -999) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
-                gt(p["perf_5d"], 15) and
-                gt(p["perf_21d"], 25))
+                between(p["rsi"], 61, 78) and
+                gt(p["adx"], 32) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                p["macd_hist_artiyor"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2.2) and
+                gt(p["perf_5d"], 13) and
+                gt(p["perf_21d"], 21) and
+                p["price_above_vwap"])
 
-    elif kod == "A": # Relative Strength
+    elif kod == "15": # Bilançodan Önce Hareket Eden Hisseler
+        # Yahoo Finance temel veri proxy — teknik filtreler
+        return (gt(price, p["sma50"] or 0) and
+                gt(p["rsi"], 56) and
+                between(p["perf_5d"], 6, 30) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.8) and
+                gt(p["adx"], 25) and
+                p["macd_hist_pozitif"] and
+                p["price_above_vwap"])
+
+    elif kod == "A": # Piyasadan Güçlü (Relative Strength)
         return (gt(price, p["sma50"] or 0) and
                 gt(price, p["sma200"] or 0) and
-                gt(p["perf_5d"], 10) and
-                gt(p["perf_21d"], 20) and
-                gt(p["rsi"], 55))
+                gt(p["perf_5d"], 5) and
+                gt(p["perf_21d"], 10) and
+                gt(p["rsi"], 50))
 
     elif kod == "B": # Büyük Para Girişi
-        return (gt(p["vol_cur"], (p["vol_avg20"] or 0) * 2) and
-                gt(p["rel_vol"], 2) and
-                gt(p["perf_1d"], 2) and
-                gt(p["rsi"], 50) and
+        return (gt(p["vol_cur"], (p["vol_avg20"] or 0) * 1.5) and
+                gt(p["rel_vol"], 1.5) and
+                gt(p["perf_1d"], 1) and
+                gt(p["rsi"], 45) and
                 gt(price, p["sma20"] or 0))
 
     elif kod == "C": # Endeks Düşerken Güçlü
         return (gt(p["perf_1d"], 0) and
-                gt(p["perf_5d"], 5) and
-                gt(p["rsi"], 55) and
+                gt(p["perf_5d"], 3) and
+                gt(p["rsi"], 50) and
                 gt(price, p["sma50"] or 0))
 
     return False
+
 
 def tara_single_strategy(chat_id, tickers, kod):
     """Tek bir strateji için tüm listeyi tara — cache kullan, iptal destekle."""
