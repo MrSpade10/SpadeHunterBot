@@ -1844,7 +1844,8 @@ def _get_cached_tickers_today():
         _cached_today_set = {r[0] for r in rows}
         _cached_today_date = today
         return _cached_today_set
-    except Exception:
+    except Exception as e:
+        print(f"_get_cached_tickers_today DB hata: {e}")
         return set()
     finally:
         conn.close()
@@ -2783,16 +2784,7 @@ def tara_single_strategy(chat_id, tickers, kod):
     missing = [t for t in tickers if t not in cached_set]
     cached  = [t for t in tickers if t in cached_set]
 
-    # Cache çok boşsa — önce /check all çalıştır uyarısı
-    eksik_oran = len(missing) / len(tickers) if tickers else 0
-    if eksik_oran > 0.5:
-        bot.send_message(chat_id,
-            f"⚠️ Cache boş: {len(missing)}/{len(tickers)} hisse indirilmemiş.\n"
-            f"Önce /check all çalıştır (cache dolsun ~13 dk), sonra /tara çok daha hızlı olur.\n"
-            f"Devam etmek için /tara {kod} yaz — bu sefer indirme yaparak tarar (~{max(1,len(missing)*TD_DELAY//60):.0f} dk).")
-        return []
-
-    # Kısmi eksik — indirerek devam et
+    # Kısmi veya tam eksik — indirerek devam et
     if missing:
         bot.send_message(chat_id,
             f"📥 {len(cached)} hazır | {len(missing)} indiriliyor (~{max(1,len(missing)*TD_DELAY//60):.0f} dk)\n"
