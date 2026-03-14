@@ -1785,7 +1785,7 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
                 # DB'ye kaydet (/sinyal al/sat için)
                 try:
                     today_key = datetime.now(pytz.timezone('Europe/Istanbul')).strftime('%Y-%m-%d')
-                    db_set(f"sinyal:{today_key}:{ticker}", json.dumps({"msg": final_msg, "type": sig_type, "chat_id": chat_id}))
+                    db_set(f"sinyal:{today_key}:{ticker}", {"msg": final_msg, "type": sig_type, "chat_id": chat_id})
                 except Exception:
                     pass
 
@@ -1811,6 +1811,9 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
         bot.send_message(chat_id,
             f"✅ Tarama bitti. {total} hisse tarandı ({no_data} veri yok).\n"
             f"📭 Sinyal bulunamadı.")
+
+    # Bellek cache setini sıfırla — /tara artık güncel DB'yi görsün
+    _invalidate_cache_set()
 
 
 def _db_cached_today(ticker):
