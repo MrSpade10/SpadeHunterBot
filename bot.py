@@ -2777,7 +2777,8 @@ def tara_single_strategy(chat_id, tickers, kod):
     eslesen = []
     hata = 0
 
-    # Cache'de olmayan hisseleri tespit et — tek DB sorgusuyla
+    # Her /tara çağrısında DB'yi taze oku — bellekteki eski boş set sorun çıkarıyor
+    _invalidate_cache_set()
     cached_set = _get_cached_tickers_today()
     missing = [t for t in tickers if t not in cached_set]
     cached  = [t for t in tickers if t in cached_set]
