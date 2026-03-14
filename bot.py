@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import telebot
 import pandas as pd
 import numpy as np
+import traceback
 import requests
 from dotenv import load_dotenv
 import pytz
@@ -1525,19 +1526,19 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
 
     total = len(tickers)
 
-    cached  = [t for t in tickers if _db_cached_today(t)]
-    missing = [t for t in tickers if t not in cached]
-    to_fetch = missing
+    _cached_set = _get_cached_tickers_today()
+    cached  = [t for t in tickers if t in _cached_set]
+    missing = [t for t in tickers if t not in _cached_set]
 
     bot.send_message(chat_id,
         f"🔍 *{total} hisse taranacak*\n"
-        f"💾 Cache: {len(cached)} hazır | 📡 İndirilecek: {len(to_fetch)}\n"
-        f"{'⏱ Tahmini: ~'+str(int(len(to_fetch)*TD_DELAY//60))+' dk' if to_fetch else '⚡ Anında basliyor!'}\n"
+        f"💾 Cache: {len(cached)} hazır | 📡 İndirilecek: {len(missing)}\n"
+        f"{'⏱ Tahmini: ~'+str(int(len(missing)*TD_DELAY//60))+' dk' if missing else '⚡ Anında basliyor!'}\n"
         f"🚫 İptal için: /iptal check"
     )
 
     fetched = 0
-    for i, ticker in enumerate(to_fetch):
+    for i, ticker in enumerate(missing):
         if is_cancelled(chat_id, "check"):
             bot.send_message(chat_id, "İndirme iptal edildi."); return
         df_d, df_w = get_data(ticker)
@@ -1545,7 +1546,7 @@ def scan_all_stocks(chat_id, limit=None, ticker_list=None):
            (isinstance(df_w, pd.DataFrame) and not df_w.empty):
             fetched += 1
         if (i+1) % 20 == 0:
-            bot.send_message(chat_id, f"📥 İndiriliyor: {i+1}/{len(to_fetch)} ({fetched} başarılı)")
+            bot.send_message(chat_id, f"📥 İndiriliyor: {i+1}/{len(missing)} ({fetched} başarılı)")
         time.sleep(TD_DELAY)
 
     bot.send_message(chat_id, "✅ Veri hazır, analiz başlıyor...")
@@ -2120,7 +2121,6 @@ def cmd_sira(message):
     threading.Thread(target=_run_sira, args=(chat_id, komutlar), daemon=True).start()
 
 @bot.message_handler(commands=['iptal'])
-
 def iptal(message):
     chat_id = str(message.chat.id)
     parts   = message.text.strip().split()
@@ -2778,8 +2778,7 @@ def tara_single_strategy(chat_id, tickers, kod):
     eslesen = []
     hata = 0
 
-    # Her /tara çağrısında DB'yi taze oku — bellekteki eski boş set sorun çıkarıyor
-    _invalidate_cache_set()
+    # Taze DB sorgusu
     cached_set = _get_cached_tickers_today()
     missing = [t for t in tickers if t not in cached_set]
     cached  = [t for t in tickers if t in cached_set]
@@ -2843,7 +2842,7 @@ def tara_format_results(kod, eslesen, ai_yorum=True):
         fiyat = ind.get("price")
         tv_link = f"https://tr.tradingview.com/chart/?symbol=BIST:{t}"
 
-        if (rsi and rv and p1d is not None and p5d is not None and p21d is not None):
+        if (rsi is not None and rv is not None and p1d is not None and p5d is not None and p21d is not None):
             fiyat_str = f"{fiyat:.2f}₺ | " if fiyat else ""
             satirlar.append(
                 f"{t} | {fiyat_str}RSI:{rsi:.0f} | RV:{rv:.1f}x | "
@@ -2921,8 +2920,9 @@ def cmd_tara(message):
             "💪 /tara A  — Piyasadan Güçlü",
             "💸 /tara B  — Büyük Para Girişi",
             "🛡️ /tara C  — Endeks Düşerken Güçlü",
+            "📊 /tara 15 — Bilançodan Önce Hareket",
             "",
-            "🔍 /tara all — Tüm stratejiler (Cuma raporu)",
+            "🔍 /tara all — Tüm 17 strateji",
         ]
         bot.send_message(chat_id, "\n".join(menu))
         return
@@ -2999,7 +2999,7 @@ def _tara_single(chat_id, kod):
         bot.send_message(chat_id, f"Tara hatasi: {str(e)[:100]}\n/kontrolbot ile detay goruntule")
 
 def _tara_all(chat_id):
-    """Tüm stratejileri sırayla tara — Cuma raporu veya /tara all."""
+    """Tüm stratejileri sırayla tara — veriyi BİR KEZ indir, 17 stratejiyi filtrele."""
     tickers = wl_get(chat_id)
     if not tickers:
         bot.send_message(chat_id, "📭 Watchlist boş! /addall yaz."); return
@@ -3016,6 +3016,56 @@ def _tara_all(chat_id):
         f"🚫 İptal: /iptal tara\n"
         f"━━━━━━━━━━━━━━━━━━━")
 
+    # ── ADIM 1: Eksik verileri BİR KEZ indir ──
+    _invalidate_cache_set()
+    cached_set = _get_cached_tickers_today()
+    missing = [t for t in tickers if t not in cached_set]
+
+    if missing:
+        bot.send_message(chat_id,
+            f"📥 {len(cached_set)} hazır | {len(missing)} indiriliyor "
+            f"(~{max(1, len(missing)*TD_DELAY//60):.0f} dk)\n"
+            f"İptal: /iptal tara")
+        for i, ticker in enumerate(missing):
+            if is_cancelled(chat_id, "tara"):
+                bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+            get_data(ticker)
+            if (i+1) % 50 == 0:
+                pct = int((i+1)/len(missing)*100)
+                bot.send_message(chat_id, f"📥 {i+1}/{len(missing)} indirildi... ({pct}%)")
+            time.sleep(TD_DELAY)
+        _invalidate_cache_set()
+        bot.send_message(chat_id, f"✅ {len(tickers)} hisse hazır. Göstergeler hesaplanıyor...")
+    else:
+        bot.send_message(chat_id, f"⚡ Cache hazır ({len(tickers)} hisse). Göstergeler hesaplanıyor...")
+
+    # ── ADIM 2: Tüm hisseler için göstergeleri BİR KEZ hesapla ──
+    if is_cancelled(chat_id, "tara"):
+        bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+
+    tum_ind = {}
+    hata = 0
+    for i, ticker in enumerate(tickers):
+        if is_cancelled(chat_id, "tara"):
+            bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+        try:
+            ind = tara_indicators(ticker)
+            if ind is not None:
+                tum_ind[ticker] = ind
+            else:
+                hata += 1
+        except Exception as e:
+            hata += 1
+            debug_log("WARN", "tara_all/ind", f"{ticker}: {str(e)[:60]}")
+        if (i+1) % 100 == 0:
+            bot.send_message(chat_id, f"📊 Göstergeler: {i+1}/{len(tickers)} işlendi...")
+
+    bot.send_message(chat_id,
+        f"✅ Göstergeler hazır: {len(tum_ind)}/{len(tickers)} hisse "
+        f"({hata} veri yok)\n"
+        f"17 strateji filtreleniyor...")
+
+    # ── ADIM 3: 17 stratejiyi filtrele (hızlı — sadece hesap) ──
     ozet_satirlar = [f"📊 TARAMA OZETI — {simdi}", ""]
     tum_eslesen = {}
 
@@ -3024,22 +3074,30 @@ def _tara_all(chat_id):
             bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
 
         isim, _ = TARA_STRATEJILER[kod]
-        bot.send_message(chat_id, f"⏳ [{i+1}/{len(kodlar)}] {isim} taranıyor...")
 
-        eslesen = tara_single_strategy(chat_id, tickers, kod)
-        if eslesen is None:
-            eslesen = []
+        eslesen = []
+        for ticker, ind in tum_ind.items():
+            try:
+                if strateji_filtre(ind, kod):
+                    eslesen.append(ind)
+            except Exception as e:
+                debug_log("WARN", f"tara_all/filtre/{kod}", f"{ticker}: {str(e)[:60]}")
+
         tum_eslesen[kod] = eslesen
+        ozet_satirlar.append(f"{isim}: {len(eslesen)} hisse")
 
+        # Sonuç mesajı
         mesaj, top5 = tara_format_results(kod, eslesen, ai_yorum=False)
         bot.send_message(chat_id, mesaj)
-
-        ozet_satirlar.append(f"{isim}: {len(eslesen)} hisse")
 
         # DB'ye kaydet
         tara_save(chat_id, kod, eslesen)
 
-        # Her strateji için AI yorumu (eşleşme varsa)
+        # Geçmiş karşılaştırma
+        if eslesen:
+            gecmis_karsilastir(chat_id, kod, eslesen)
+
+        # AI yorumu (eşleşme varsa)
         if top5:
             try:
                 yorum = tara_ai_yorum(kod, top5)
@@ -3048,15 +3106,11 @@ def _tara_all(chat_id):
             except Exception as e:
                 debug_log("ERROR", f"tara_all/ai/{kod}", str(e)[:80])
 
-        time.sleep(1)  # Flood limiti
+        time.sleep(0.5)  # Flood limiti
 
-    # Genel özet
+    # ── Genel özet ──
     en_cok = sorted(tum_eslesen.items(), key=lambda x: len(x[1]), reverse=True)[:3]
-    ozet_satirlar += [
-        "",
-        "━━━━━━━━━━━━━━━━━━━",
-        "EN FAZLA ESLESEN:",
-    ]
+    ozet_satirlar += ["", "━━━━━━━━━━━━━━━━━━━", "EN FAZLA ESLESEN:"]
     for kod, eslesen in en_cok:
         isim, _ = TARA_STRATEJILER[kod]
         ozet_satirlar.append(f"  {isim}: {len(eslesen)} hisse")
@@ -3130,10 +3184,10 @@ def cmd_tarasonuc(message):
                 p5d  = e.get("perf_5d", 0)
                 p21d = e.get("perf_21d", 0)
                 satirlar.append(
-                    f"{t} | RSI:{rsi:.0f} | RV:{rv:.1f}x | "
-                    f"G:{'+' if p1d>0 else ''}{p1d:.1f}% "
-                    f"H:{'+' if p5d>0 else ''}{p5d:.1f}% "
-                    f"A:{'+' if p21d>0 else ''}{p21d:.1f}%"
+                    f"{t} | RSI:{rsi:.1f} | RV:{rv:.2f}x | "
+                    f"G:{'+' if (p1d or 0)>0 else ''}{(p1d or 0):.1f}% "
+                    f"H:{'+' if (p5d or 0)>0 else ''}{(p5d or 0):.1f}% "
+                    f"A:{'+' if (p21d or 0)>0 else ''}{(p21d or 0):.1f}%"
                 )
 
         if ai_yorum:
@@ -3925,7 +3979,6 @@ def cmd_kredi(message):
 
 
 # ── Hata Günlüğü (benim için — Claude debug sistemi) ─────────
-import traceback, collections
 
 _debug_log = collections.deque(maxlen=30)   # Son 30 olay
 _call_log  = collections.deque(maxlen=20)   # Son 20 komut çağrısı
@@ -4249,7 +4302,8 @@ Türkçe akşam bülteni:
 # ═══════════════════════════════════════════════
 def auto_scan():
     tr_tz = pytz.timezone('Europe/Istanbul')
-    scanned_date  = None
+    check_date    = None  # 18:05 teknik tarama tarihi
+    cuma_date     = None  # Cuma strateji taraması
     bulten_s_date = None  # sabah bülteni
     bulten_a_date = None  # akşam bülteni
     kriz_date     = None  # kriz kontrolü
@@ -4287,8 +4341,8 @@ def auto_scan():
 
             # Cuma 17:00 — Tam strateji taraması
             is_friday = now.weekday() == 4  # 4 = Cuma
-            if is_friday and now.hour == 17 and now.minute < 10 and scanned_date != (now.date(), "cuma"):
-                scanned_date = (now.date(), "cuma")
+            if is_friday and now.hour == 17 and now.minute < 10 and cuma_date != now.date():
+                cuma_date = now.date()
                 ids = wl_all_ids()
                 print(f"[CUMA_TARA] Haftalık tam strateji taraması başlıyor — {len(ids)} kullanıcı")
                 for chat_id in ids:
@@ -4302,8 +4356,8 @@ def auto_scan():
                         debug_log("ERROR", "cuma_tara", str(e)[:100])
 
             # 18:05 — Teknik tarama
-            if now.hour == 18 and now.minute >= 5 and now.minute < 45 and scanned_date != now.date():
-                scanned_date = now.date()
+            if now.hour == 18 and now.minute >= 5 and now.minute < 45 and check_date != now.date():
+                check_date = now.date()
                 ids = wl_all_ids()
                 print(f"[AUTO_SCAN] 18:05 taraması başlıyor — {len(ids)} kullanıcı")
                 for chat_id in ids:
