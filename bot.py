@@ -2422,16 +2422,10 @@ SPADE_M1         = 5   # Ana EMA
 SPADE_M2         = 5   # Sinyal EMA
 
 def spade_calc_obv(close, volume):
-    """OBV hesapla."""
-    obv = [0.0]
-    for i in range(1, len(close)):
-        if close.iloc[i] > close.iloc[i-1]:
-            obv.append(obv[-1] + volume.iloc[i])
-        elif close.iloc[i] < close.iloc[i-1]:
-            obv.append(obv[-1] - volume.iloc[i])
-        else:
-            obv.append(obv[-1])
-    return pd.Series(obv, index=close.index)
+    """OBV hesapla — numpy vektörize (hızlı)."""
+    direction = np.sign(close.diff().fillna(0))
+    obv = (direction * volume).cumsum()
+    return obv
 
 def spade_calc_cmf(high, low, close, volume, period=21):
     """Chaikin Money Flow hesapla."""
@@ -2758,29 +2752,35 @@ def _tara_spade(chat_id):
     hata = 0
     baslangic = time.time()
 
-    for i, ticker in enumerate(tickers):
-        if is_cancelled(chat_id, "tara"):
-            bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
-        try:
-            sonuc = spade_indicators(ticker)
-            if sonuc is None:
-                continue
-            if sonuc["tam_onay"]:
-                tam_onay_list.append(sonuc)
-            elif sonuc["master_buy"]:
-                master_buy_list.append(sonuc)
-        except Exception as e:
-            hata += 1
-            debug_log("WARN", "spade/ind", f"{ticker}: {str(e)[:60]}")
+    try:
+        for i, ticker in enumerate(tickers):
+            if is_cancelled(chat_id, "tara"):
+                bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+            try:
+                sonuc = spade_indicators(ticker)
+                if sonuc is None:
+                    continue
+                if sonuc["tam_onay"]:
+                    tam_onay_list.append(sonuc)
+                elif sonuc["master_buy"]:
+                    master_buy_list.append(sonuc)
+            except Exception as e:
+                hata += 1
+                debug_log("WARN", "spade/ind", f"{ticker}: {str(e)[:80]}")
 
-        if (i+1) % 50 == 0:
-            gecen = max(1, int(time.time() - baslangic))
-            kalan = int((len(tickers)-(i+1)) * (gecen/(i+1)))
-            kalan_str = f"{kalan//60}dk {kalan%60}sn" if kalan >= 60 else f"{kalan}sn"
-            bot.send_message(chat_id,
-                f"📊 {i+1}/{len(tickers)} işlendi | "
-                f"🏆 {len(tam_onay_list)} tam | ⚡ {len(master_buy_list)} master\n"
-                f"⏳ Kalan: ~{kalan_str}")
+            if (i+1) % 20 == 0:  # Her 20'de bir bildir
+                gecen = max(1, int(time.time() - baslangic))
+                kalan = int((len(tickers)-(i+1)) * (gecen/(i+1)))
+                kalan_str = f"{kalan//60}dk {kalan%60}sn" if kalan >= 60 else f"{kalan}sn"
+                bot.send_message(chat_id,
+                    f"📊 {i+1}/{len(tickers)} işlendi | "
+                    f"🏆 {len(tam_onay_list)} tam | ⚡ {len(master_buy_list)} master\n"
+                    f"⏳ Kalan: ~{kalan_str}")
+
+    except Exception as e:
+        bot.send_message(chat_id, f"❌ SpadeHunter kritik hata: {str(e)[:120]}")
+        debug_log("ERROR", "_tara_spade", str(e))
+        return
 
     # Skora göre sırala
     tam_onay_list.sort(key=lambda x: x["composite"], reverse=True)
