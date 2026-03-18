@@ -2482,6 +2482,14 @@ def spade_indicators(ticker):
         return None
 
     d      = df_d.copy()
+
+    # FIX: Seans içinde çalışıyorsa bugünün yarım barını çıkar
+    # Borsa İstanbul kapanış saati 18:00 TR
+    tr_now = datetime.now(pytz.timezone("Europe/Istanbul"))
+    bist_kapali = tr_now.hour >= 18 or tr_now.hour < 10 or tr_now.weekday() >= 5
+    if not bist_kapali and len(d) > 1:
+        d = d.iloc[:-1]  # Bugünün yarım barını çıkar
+
     close  = d["Close"]
     high   = d["High"]
     low    = d["Low"]
@@ -2498,7 +2506,7 @@ def spade_indicators(ticker):
 
     macd_line, macd_sig = calc_macd(close)
     macd_hist     = macd_line - macd_sig
-    macd_hist_ris = (macd_hist > macd_hist.shift(1))        # Series
+    macd_hist_ris = (macd_hist > macd_hist.shift(1))
     macd_full_bull = (macd_line > macd_sig) & (macd_hist > 0) & macd_hist_ris
     macd_hist_pos  = macd_hist > 0
 
@@ -2514,9 +2522,17 @@ def spade_indicators(ticker):
     adx_s      = calc_adx(d)
     strong_trend = adx_s > SPADE_ADX_THRESH
 
-    # VWAP (20 periyot hacim ağırlıklı yaklaşım)
+    # FIX: VWAP — seans bazlı (Pine Script ta.vwap gibi)
+    # Günlük frekansta her bar = 1 gün kapanışı, dolayısıyla
+    # "seans bazlı" = o günün HLC3 fiyatının kümülatif hacim ağırlıklı ort.
+    # Günlük barda bunun en doğru yaklaşımı: her barın kendi HLC3'ü
+    # (Pine Script daily chartda da tek bar = 1 seans = HLC3/bar)
     hlc3       = (high + low + close) / 3
-    vwap_s     = (hlc3 * volume).rolling(20).sum() / volume.rolling(20).sum().replace(0, np.nan)
+    # Kümülatif HLC3*Vol / kümülatif Vol — yıl başından itibaren sıfırlanır
+    # Bunun yerine Pine uyumlu: 252 günlük pencere (1 yıl) anchor
+    cum_tp_vol = (hlc3 * volume).rolling(252, min_periods=1).sum()
+    cum_vol    = volume.rolling(252, min_periods=1).sum().replace(0, np.nan)
+    vwap_s     = cum_tp_vol / cum_vol
     above_vwap = close > vwap_s
 
     # Bollinger
