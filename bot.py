@@ -2406,6 +2406,423 @@ def perf_pct(series, days):
     result = (series.iloc[-1] - base) / base * 100
     return None if pd.isna(result) else float(result)
 
+
+# ═══════════════════════════════════════════════════════════════
+# SPADE HUNTER — Pine Script'ten Python'a tam çeviri
+# ═══════════════════════════════════════════════════════════════
+
+# Parametreler (Pine Script default'ları)
+SPADE_BUY_LIMIT  = 0
+SPADE_VOL_MULT   = 1.8
+SPADE_VOL_EARLY  = 1.3
+SPADE_ADX_THRESH = 25
+SPADE_RSI_LOWER  = 40
+SPADE_RSI_UPPER  = 68
+SPADE_M1         = 5   # Ana EMA
+SPADE_M2         = 5   # Sinyal EMA
+
+def spade_calc_obv(close, volume):
+    """OBV hesapla."""
+    obv = [0.0]
+    for i in range(1, len(close)):
+        if close.iloc[i] > close.iloc[i-1]:
+            obv.append(obv[-1] + volume.iloc[i])
+        elif close.iloc[i] < close.iloc[i-1]:
+            obv.append(obv[-1] - volume.iloc[i])
+        else:
+            obv.append(obv[-1])
+    return pd.Series(obv, index=close.index)
+
+def spade_calc_cmf(high, low, close, volume, period=21):
+    """Chaikin Money Flow hesapla."""
+    denom = (high - low).replace(0, np.nan)
+    mfm = ((close - low) - (high - close)) / denom
+    mfv = mfm * volume
+    cmf = mfv.rolling(period).sum() / volume.rolling(period).sum().replace(0, np.nan)
+    return cmf
+
+def spade_weekly_score(df_w):
+    """
+    Weekly f_weekly() fonksiyonunu hesapla.
+    df_w: weekly DataFrame. Son bar değerlerini döndürür.
+    puan >= 4 ise True.
+    """
+    if df_w is None or df_w.empty or len(df_w) < 50:
+        return False
+    close  = df_w["Close"]
+    high   = df_w["High"]
+    low    = df_w["Low"]
+    volume = df_w["Volume"]
+
+    w_sma50  = calc_sma(close, 50).iloc[-1]
+    w_sma200 = calc_sma(close, 200).iloc[-1] if len(close) >= 200 else None
+    w_rsi    = calc_rsi(close, 14)
+    w_rsi_v  = float(w_rsi.iloc[-1]) if len(w_rsi.dropna()) >= 1 else None
+    w_macd_l, w_macd_s = calc_macd(close)
+    w_mh     = (w_macd_l - w_macd_s).iloc[-1]
+    w_cmf    = spade_calc_cmf(high, low, close, volume).iloc[-1]
+    w_obv    = spade_calc_obv(close, volume)
+    w_obv_ema = w_obv.ewm(span=21, adjust=False).mean()
+    w_obv_v  = w_obv.iloc[-1]
+    w_obv_e  = w_obv_ema.iloc[-1]
+    c_price  = float(close.iloc[-1])
+
+    k1 = (not pd.isna(w_sma50))  and c_price > float(w_sma50)
+    k2 = (w_rsi_v is not None)   and 35.0 <= w_rsi_v <= 75.0
+    k3 = (not pd.isna(w_mh))     and float(w_mh) > 0.0
+    k4 = (not pd.isna(w_cmf))    and float(w_cmf) > 0.0
+    k5 = (not pd.isna(w_obv_v))  and float(w_obv_v) > float(w_obv_e)
+    k6 = (w_sma200 is not None and not pd.isna(w_sma200)) and c_price > float(w_sma200)
+
+    puan = sum([k1, k2, k3, k4, k5, k6])
+    return puan >= 4
+
+def spade_indicators(ticker):
+    """
+    SpadeHunterBot indikatörünü hesapla.
+    tamOnay, masterBuy ve sinyal tiplerini döndürür.
+    Minimum 120 bar gerekir.
+    """
+    df_d, df_w = get_data(ticker)
+    if df_d is None or df_d.empty or len(df_d) < 120:
+        return None
+
+    d      = df_d.copy()
+    close  = d["Close"]
+    high   = d["High"]
+    low    = d["Low"]
+    volume = d["Volume"]
+    open_  = d["Open"] if "Open" in d.columns else close
+
+    price = float(close.iloc[-1])
+
+    # ── Temel göstergeler ──
+    sma20  = calc_sma(close, 20)
+    sma50  = calc_sma(close, 50)
+    sma200 = calc_sma(close, 200)
+    rsi14  = calc_rsi(close, 14)
+
+    macd_line, macd_sig = calc_macd(close)
+    macd_hist     = macd_line - macd_sig
+    macd_hist_ris = (macd_hist > macd_hist.shift(1))        # Series
+    macd_full_bull = (macd_line > macd_sig) & (macd_hist > 0) & macd_hist_ris
+    macd_hist_pos  = macd_hist > 0
+
+    vma20 = volume.rolling(20).mean()
+    rvol  = volume / vma20.replace(0, np.nan)
+
+    # Hacim: earlyVol = rvol >= 1.3 AND son 3 bar üst üste artıyor
+    vol_trend3 = (volume > volume.shift(1)) & (volume.shift(1) > volume.shift(2))
+    early_vol  = (rvol >= SPADE_VOL_EARLY) & vol_trend3
+    high_vol   = rvol >= SPADE_VOL_MULT    # fakeBreak için
+
+    # ADX
+    adx_s      = calc_adx(d)
+    strong_trend = adx_s > SPADE_ADX_THRESH
+
+    # VWAP (20 periyot hacim ağırlıklı yaklaşım)
+    hlc3       = (high + low + close) / 3
+    vwap_s     = (hlc3 * volume).rolling(20).sum() / volume.rolling(20).sum().replace(0, np.nan)
+    above_vwap = close > vwap_s
+
+    # Bollinger
+    bb_width   = calc_bollinger_width(close, 20, 2)
+    bb_wma60   = bb_width.rolling(60).mean()
+    bb_sqz     = bb_width < bb_wma60 * 0.70
+    bb_tsqz    = bb_width < bb_wma60 * 0.65
+
+    # CMF
+    cmf21      = spade_calc_cmf(high, low, close, volume, 21)
+    cmf_pos    = cmf21 > 0.05
+    cmf_strong = cmf21 > 0.15
+
+    # OBV
+    obv_val    = spade_calc_obv(close, volume)
+    obv_ema    = obv_val.ewm(span=21, adjust=False).mean()
+    obv_bull   = obv_val > obv_ema
+
+    # Performans
+    perf_d = (close / close.shift(1)  - 1.0) * 100.0
+    perf_w = (close / close.shift(5)  - 1.0) * 100.0
+    perf_m = (close / close.shift(21) - 1.0) * 100.0
+
+    # RSI 50 crossover (son 3 bar)
+    rsi_x50 = (
+        ((rsi14.shift(2) <= 50) & (rsi14.shift(1) > 50)) |
+        ((rsi14.shift(1) <= 50) & (rsi14        > 50)) |
+        ((rsi14.shift(1) <= 50) & (rsi14        > 50))
+    )
+
+    # ── Weekly onay ──
+    weekly_ok = spade_weekly_score(df_w)
+
+    # ── Composite skorlar (tüm seri) ──
+    c1 = pd.Series(0.0, index=close.index)
+    c1 += (close > sma200).fillna(False) * 12.0
+    c1 += ((sma50 > 0) & ((close - sma50).abs() / sma50.replace(0,np.nan) * 100 < 5.0)).fillna(False) * 10.0
+    c1 += ((rsi14 >= SPADE_RSI_LOWER) & (rsi14 <= SPADE_RSI_UPPER)).fillna(False) * 8.0
+    c1 += early_vol.fillna(False) * 12.0
+    c1 += bb_sqz.fillna(False) * 12.0
+    c1 += ((perf_w >= 0.0) & (perf_w <= 6.0)).fillna(False) * 5.0
+    c1 += (perf_m > 11.0).fillna(False) * 8.0
+    c1 += strong_trend.fillna(False) * 8.0
+    c1 += above_vwap.fillna(False) * 8.0
+    c1 += (close > open_).fillna(False) * 5.0
+    c1 += macd_hist_ris.fillna(False) * 5.0
+    c1 += cmf_pos.fillna(False) * 4.0
+    c1 += obv_bull.fillna(False) * 3.0
+    n1 = c1.clip(upper=100.0)
+
+    c2 = pd.Series(0.0, index=close.index)
+    c2 += (close > sma20).fillna(False) * 8.0
+    c2 += (close > sma50).fillna(False) * 8.0
+    c2 += ((rsi14 >= 50.0) & (rsi14 <= 74.0)).fillna(False) * 12.0
+    c2 += macd_full_bull.fillna(False) * 16.0
+    c2 += early_vol.fillna(False) * 12.0
+    c2 += (perf_d > 2.0).fillna(False) * 8.0
+    c2 += (perf_w > 5.0).fillna(False) * 8.0
+    c2 += (perf_m < 11.0).fillna(False) * 3.0
+    c2 += strong_trend.fillna(False) * 8.0
+    c2 += above_vwap.fillna(False) * 8.0
+    c2 += rsi_x50.fillna(False) * 5.0
+    c2 += (cmf21 > 0.1).fillna(False) * 4.0
+    n2 = c2.clip(upper=100.0)
+
+    c3 = pd.Series(0.0, index=close.index)
+    c3 += (close > sma50).fillna(False) * 15.0
+    c3 += ((rsi14 >= 44.0) & (rsi14 <= 62.0)).fillna(False) * 15.0
+    c3 += (rvol > 1.9).fillna(False) * 18.0
+    c3 += ((perf_w >= 0.0) & (perf_w <= 7.0)).fillna(False) * 8.0
+    c3 += ((perf_m >= 6.0) & (perf_m <= 22.0)).fillna(False) * 8.0
+    c3 += strong_trend.fillna(False) * 10.0
+    c3 += above_vwap.fillna(False) * 10.0
+    c3 += macd_hist_pos.fillna(False) * 8.0
+    c3 += cmf_strong.fillna(False) * 8.0
+    n3 = c3.clip(upper=100.0)
+
+    c4 = pd.Series(0.0, index=close.index)
+    c4 += ((sma50 > 0) & ((close - sma50).abs() / sma50.replace(0,np.nan) * 100 < 5.0)).fillna(False) * 18.0
+    c4 += ((rsi14 >= 38.0) & (rsi14 <= 56.0)).fillna(False) * 18.0
+    c4 += (perf_d.abs() <= 1.5).fillna(False) * 14.0
+    c4 += (perf_w.abs() <= 4.0).fillna(False) * 14.0
+    c4 += (volume < 0.7 * vma20).fillna(False) * 14.0
+    c4 += bb_tsqz.fillna(False) * 14.0
+    c4 += (adx_s < 20.0).fillna(False) * 8.0
+    n4 = c4.clip(upper=100.0)
+
+    # Composite
+    composite = n1 * 0.30 + n2 * 0.25 + n3 * 0.25 + n4 * 0.20
+
+    # FakeBreak
+    brk_event  = (
+        ((close > sma20) & (close.shift(1) <= sma20)) |
+        ((close > sma50) & (close.shift(1) <= sma50))
+    )
+    fake_break = brk_event & (~high_vol | ~strong_trend | ~above_vwap)
+
+    adj_comp   = composite.where(~fake_break, composite * 0.60)
+    main_line  = adj_comp.ewm(span=SPADE_M1, adjust=False).mean()
+    sig_line   = main_line.ewm(span=SPADE_M2, adjust=False).mean()
+    hist_val   = main_line - sig_line
+
+    # ── Son bar değerleri ──
+    i = -1  # son bar
+
+    def sv(s):  # safe float
+        v = s.iloc[i]
+        return None if pd.isna(v) else float(v)
+
+    ml   = sv(main_line)
+    sl   = sv(sig_line)
+    hv   = sv(hist_val)
+    n1v  = sv(n1)
+    n2v  = sv(n2)
+    n3v  = sv(n3)
+    n4v  = sv(n4)
+    comp = sv(composite)
+    adx_v= sv(adx_s)
+    rsi_v= sv(rsi14)
+    rvol_v = sv(rvol)
+
+    fb   = bool(fake_break.iloc[i])
+    ev   = bool(early_vol.iloc[i])
+    st   = bool(strong_trend.iloc[i])
+    av   = bool(above_vwap.iloc[i])
+    mhr  = bool(macd_hist_ris.iloc[i])
+    mfb  = bool(macd_full_bull.iloc[i])
+    cmfp = bool(cmf_pos.iloc[i])
+    obvb = bool(obv_bull.iloc[i])
+
+    if ml is None or sl is None or hv is None:
+        return None
+
+    # Crossover: mainLine 0'ı yukarı kesiyor (önceki bar <= 0, şimdi > 0)
+    ml_prev = sv(main_line.shift(1))
+    ml_cross_up = (ml_prev is not None) and (ml_prev <= SPADE_BUY_LIMIT) and (ml > SPADE_BUY_LIMIT)
+    ml_rising   = (ml_prev is not None) and (ml > ml_prev)
+
+    # Sinyaller
+    sig_b  = (n1v is not None and n1v >= 65.0) and ml_cross_up and not fb
+    sig_k  = (n2v is not None and n2v >= 65.0) and ev and st and av and mfb and not fb
+    sig_kp = (n3v is not None and n3v >= 65.0) and ml_rising and bool(cmf_strong.iloc[i]) and not fb
+    sig_s  = (n4v is not None and n4v >= 60.0) and bool(bb_sqz.iloc[i]) and (adx_v is not None and adx_v < 20.0)
+
+    sig_count  = sum([sig_b, sig_k, sig_kp])
+    master_buy = (sig_count >= 1 and ml > sl and hv > 0.0
+                  and ml > SPADE_BUY_LIMIT and not fb and mhr)
+
+    # Onay koşulları (t1-t8)
+    t1 = weekly_ok
+    t2 = not fb
+    t3 = ev
+    t4 = st
+    t5 = cmfp
+    t6 = av
+    t7 = mhr
+    t8 = (rsi_v is not None) and 35.0 <= rsi_v <= 75.0
+
+    onay_count = sum([t1, t2, t3, t4, t5, t6, t7, t8])
+    tam_onay   = (onay_count >= 7) and master_buy
+
+    if not master_buy:
+        return None   # Bizi ilgilendirmiyor
+
+    # Hangi sinyaller tetiklendi
+    sinyaller = []
+    if sig_b:  sinyaller.append("B")
+    if sig_k:  sinyaller.append("K")
+    if sig_kp: sinyaller.append("KP")
+    if sig_s:  sinyaller.append("S")
+
+    return {
+        "ticker":      ticker,
+        "price":       price,
+        "tam_onay":    tam_onay,
+        "master_buy":  master_buy,
+        "onay_count":  onay_count,
+        "composite":   round(comp, 1) if comp else 0,
+        "sinyaller":   "+".join(sinyaller) if sinyaller else "MB",
+        "rsi":         round(rsi_v, 1) if rsi_v else 0,
+        "adx":         round(adx_v, 1) if adx_v else 0,
+        "rvol":        round(rvol_v, 2) if rvol_v else 0,
+        "weekly_ok":   t1,
+        "fake_break":  fb,
+    }
+
+
+def _tara_spade(chat_id):
+    """SpadeHunter taraması — tamOnay ve masterBuy listesi."""
+    tickers = wl_get(chat_id)
+    if not tickers:
+        bot.send_message(chat_id, "📭 Watchlist boş! /addall yaz."); return
+
+    tr_tz = pytz.timezone("Europe/Istanbul")
+    simdi = datetime.now(tr_tz).strftime("%d.%m.%Y %H:%M")
+
+    reset_cancel_flag(chat_id, "tara")
+
+    # Cache kontrolü
+    cached_set = _get_cached_tickers_today()
+    missing = [t for t in tickers if t not in cached_set]
+
+    bot.send_message(chat_id,
+        f"♠️ *SPADE HUNTER TARAMASI*\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
+        f"{simdi}\n"
+        f"📋 {len(tickers)} hisse | "
+        f"💾 {len(tickers)-len(missing)} cache | "
+        f"📥 {len(missing)} indirilecek\n"
+        f"🚫 İptal: /iptal tara")
+
+    if missing:
+        for i, ticker in enumerate(missing):
+            if is_cancelled(chat_id, "tara"):
+                bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+            get_data(ticker)
+            if (i+1) % 20 == 0:
+                pct = int((i+1)/len(missing)*100)
+                kalan_sn = int((len(missing)-(i+1)) * TD_DELAY)
+                kalan_str = f"{kalan_sn//60}dk {kalan_sn%60}sn" if kalan_sn >= 60 else f"{kalan_sn}sn"
+                bot.send_message(chat_id,
+                    f"📥 {i+1}/{len(missing)} indirildi ({pct}%)\n"
+                    f"⏳ Kalan: ~{kalan_str}")
+            time.sleep(TD_DELAY)
+        _invalidate_cache_set()
+        bot.send_message(chat_id, "✅ Veri hazır, SpadeHunter hesaplanıyor...")
+    else:
+        bot.send_message(chat_id, "⚡ Cache hazır. SpadeHunter hesaplanıyor...")
+
+    # Tüm hisseleri tara
+    tam_onay_list  = []
+    master_buy_list = []
+    hata = 0
+    baslangic = time.time()
+
+    for i, ticker in enumerate(tickers):
+        if is_cancelled(chat_id, "tara"):
+            bot.send_message(chat_id, "🚫 Tara iptal edildi."); return
+        try:
+            sonuc = spade_indicators(ticker)
+            if sonuc is None:
+                continue
+            if sonuc["tam_onay"]:
+                tam_onay_list.append(sonuc)
+            elif sonuc["master_buy"]:
+                master_buy_list.append(sonuc)
+        except Exception as e:
+            hata += 1
+            debug_log("WARN", "spade/ind", f"{ticker}: {str(e)[:60]}")
+
+        if (i+1) % 50 == 0:
+            gecen = max(1, int(time.time() - baslangic))
+            kalan = int((len(tickers)-(i+1)) * (gecen/(i+1)))
+            kalan_str = f"{kalan//60}dk {kalan%60}sn" if kalan >= 60 else f"{kalan}sn"
+            bot.send_message(chat_id,
+                f"📊 {i+1}/{len(tickers)} işlendi | "
+                f"🏆 {len(tam_onay_list)} tam | ⚡ {len(master_buy_list)} master\n"
+                f"⏳ Kalan: ~{kalan_str}")
+
+    # Skora göre sırala
+    tam_onay_list.sort(key=lambda x: x["composite"], reverse=True)
+    master_buy_list.sort(key=lambda x: x["composite"], reverse=True)
+
+    # ── TAM ONAY mesajı ──
+    if tam_onay_list:
+        satirlar = [f"🏆 *TAM ONAY* (7/8+ onay) — {len(tam_onay_list)} hisse", "━━━━━━━━━━━━━━━━━━━"]
+        for s in tam_onay_list:
+            haftalik = "✅W" if s["weekly_ok"] else "❌W"
+            satirlar.append(
+                f"*{s['ticker']}*  {s['price']:.2f}₺  "
+                f"Skor:{s['composite']:.0f}  [{s['sinyaller']}]  "
+                f"RSI:{s['rsi']:.0f}  Vol:{s['rvol']:.1f}x  {haftalik}  {s['onay_count']}/8"
+            )
+        bot.send_message(chat_id, "\n".join(satirlar), parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, "🏆 TAM ONAY: Bugün eşleşme yok.")
+
+    # ── MASTER BUY mesajı ──
+    if master_buy_list:
+        satirlar = [f"⚡ *MASTER BUY* — {len(master_buy_list)} hisse", "━━━━━━━━━━━━━━━━━━━"]
+        for s in master_buy_list[:20]:  # max 20
+            haftalik = "✅W" if s["weekly_ok"] else "❌W"
+            satirlar.append(
+                f"*{s['ticker']}*  {s['price']:.2f}₺  "
+                f"Skor:{s['composite']:.0f}  [{s['sinyaller']}]  "
+                f"RSI:{s['rsi']:.0f}  Vol:{s['rvol']:.1f}x  {haftalik}  {s['onay_count']}/8"
+            )
+        if len(master_buy_list) > 20:
+            satirlar.append(f"...ve {len(master_buy_list)-20} tane daha")
+        bot.send_message(chat_id, "\n".join(satirlar), parse_mode='Markdown')
+    else:
+        bot.send_message(chat_id, "⚡ MASTER BUY: Bugün eşleşme yok.")
+
+    toplam = len(tam_onay_list) + len(master_buy_list)
+    bot.send_message(chat_id,
+        f"♠️ SpadeHunter tamamlandı ({datetime.now(tr_tz).strftime('%H:%M')})\n"
+        f"🏆 Tam Onay: {len(tam_onay_list)}  ⚡ Master Buy: {len(master_buy_list)}\n"
+        f"📊 Toplam sinyal: {toplam}/{len(tickers)} hisse"
+        + (f"\n⚠️ {hata} hisse hesaplanamadı" if hata else ""))
+
 def tara_indicators(ticker):
     """
     Bir hisse için /tara stratejilerinde kullanılacak
@@ -2938,6 +3355,8 @@ def cmd_tara(message):
             "📊 /tara 15 — Bilançodan Önce Hareket",
             "",
             "🔍 /tara all — Tüm 17 strateji",
+            "",
+            "♠️ /tara spade — SpadeHunter (Tam Onay + Master Buy)",
         ]
         bot.send_message(chat_id, "\n".join(menu))
         return
@@ -2947,6 +3366,11 @@ def cmd_tara(message):
     # all — tüm stratejiler
     if kod == "ALL":
         threading.Thread(target=_tara_all, args=(chat_id,), daemon=True).start()
+        return
+
+    # spade — SpadeHunter taraması
+    if kod == "SPADE":
+        threading.Thread(target=_tara_spade, args=(chat_id,), daemon=True).start()
         return
 
     # Geçerli strateji mi?
