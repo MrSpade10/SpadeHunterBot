@@ -2571,9 +2571,24 @@ def spade_indicators(ticker):
         ((rsi14.shift(1) <= 50) & (rsi14        > 50))
     )
 
-    # ── Uzun vade onayı (t1) — Günlük veri üzerinden haftalık mantık ──
-    # Artık ana hesap zaten haftalık; t1 = aylık/uzun vade filtresi
-    weekly_ok = spade_weekly_score(df_d) if (df_d is not None and not df_d.empty) else False
+    # ── Uzun vade onayı (t1) — Zaten haftalık hesap yapıyoruz
+    # TV f_weekly() gibi: SMA50/200 üstünde, RSI 35-75, MACD hist > 0, CMF > 0, OBV > EMA
+    # Bunların hepsi zaten hesaplandı, son bar değerlerini kullan
+    _sma50_v  = float(sma50.iloc[-1])  if not pd.isna(sma50.iloc[-1])  else None
+    _sma200_v = float(sma200.iloc[-1]) if not pd.isna(sma200.iloc[-1]) else None
+    _rsi_wok  = float(rsi14.iloc[-1])  if not pd.isna(rsi14.iloc[-1])  else None
+    _mh_wok   = float((macd_line - macd_sig).iloc[-1])
+    _cmf_wok  = float(cmf21.iloc[-1])  if not pd.isna(cmf21.iloc[-1])  else 0.0
+    _obv_wok  = spade_calc_obv(close, volume)
+    _obve_wok = _obv_wok.ewm(span=21, adjust=False).mean()
+
+    _wk1 = (_sma50_v  is not None) and price > _sma50_v
+    _wk2 = (_rsi_wok  is not None) and 35.0 <= _rsi_wok <= 75.0
+    _wk3 = not pd.isna(_mh_wok)    and _mh_wok > 0.0
+    _wk4 = _cmf_wok > 0.0
+    _wk5 = float(_obv_wok.iloc[-1]) > float(_obve_wok.iloc[-1])
+    _wk6 = (_sma200_v is not None) and price > _sma200_v
+    weekly_ok = sum([_wk1, _wk2, _wk3, _wk4, _wk5, _wk6]) >= 4
 
     # ── Composite skorlar (tüm seri) ──
     c1 = pd.Series(0.0, index=close.index)
@@ -2809,7 +2824,9 @@ def _tara_spade(chat_id):
                 hata += 1
                 debug_log("WARN", "spade/ind", f"{ticker}: {str(e)[:80]}")
 
-            if (i+1) % 20 == 0:  # Her 20'de bir bildir
+            if (i+1) == 1:  # İlk hisseden sonra canlı olduğunu bildir
+                bot.send_message(chat_id, f"📊 Hesaplama başladı — {tickers[0]} OK")
+        if (i+1) % 10 == 0:  # Her 10'da bir bildir (haftalık hesap daha ağır)
                 gecen = max(1, int(time.time() - baslangic))
                 kalan = int((len(tickers)-(i+1)) * (gecen/(i+1)))
                 kalan_str = f"{kalan//60}dk {kalan%60}sn" if kalan >= 60 else f"{kalan}sn"
