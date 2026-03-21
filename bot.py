@@ -2704,6 +2704,9 @@ def spade_indicators(ticker):
     if sig_kp: sinyaller.append("KP")
     if sig_s:  sinyaller.append("S")
 
+    cmf_v   = float(cmf21.iloc[i])  if not pd.isna(cmf21.iloc[i])  else 0.0
+    vwap_v  = float(vwap_s.iloc[i]) if not pd.isna(vwap_s.iloc[i]) else 0.0
+
     return {
         "ticker":      ticker,
         "price":       price,
@@ -2717,6 +2720,19 @@ def spade_indicators(ticker):
         "rvol":        round(rvol_v, 2) if rvol_v else 0,
         "weekly_ok":   t1,
         "fake_break":  fb,
+        # Debug için ek değerler
+        "n1": round(n1v,1) if n1v else 0,
+        "n2": round(n2v,1) if n2v else 0,
+        "n3": round(n3v,1) if n3v else 0,
+        "n4": round(n4v,1) if n4v else 0,
+        "ml": round(ml,2), "sl": round(sl,2), "hv": round(hv,2),
+        "ml_prev": round(ml_prev,2) if ml_prev else 0,
+        "t1_weekly": t1, "t2_fake": t2, "t3_vol": t3,
+        "t4_adx": t4, "t5_cmf": t5, "t6_vwap": t6,
+        "t7_macd": t7, "t8_rsi": t8,
+        "sig_b": sig_b, "sig_k": sig_k, "sig_kp": sig_kp, "sig_s": sig_s,
+        "vwap": round(vwap_v,2), "cmf": round(cmf_v,3),
+        "early_vol": ev, "strong_trend": st,
     }
 
 
@@ -4148,6 +4164,62 @@ Kritik haber varsa:
     if result.strip().upper() == "YOK" or result.strip().startswith("YOK"):
         return None
     return result
+
+
+# ── /spade TICKER — SpadeHunter tek hisse debug ──────────────
+@bot.message_handler(commands=['spade'])
+def cmd_spade_debug(message):
+    chat_id = str(message.chat.id)
+    parts = message.text.strip().split()
+    if len(parts) < 2:
+        bot.reply_to(message, "Kullanım: /spade THYAO"); return
+    ticker = parts[1].upper().replace(".IS","")
+    bot.send_message(chat_id, f"♠️ {ticker} SpadeHunter analizi yapılıyor...")
+    def _run():
+        try:
+            r = spade_indicators(ticker)
+            if r is None:
+                # Master buy yok ama değerleri yine de göster
+                # spade_indicators None döndüğünde debug için özel çağrı
+                bot.send_message(chat_id, f"⚪ {ticker}: MasterBuy sinyali yok.")
+                return
+            onay = "✅" if r["tam_onay"] else ("⚡" if r["master_buy"] else "⚪")
+            satirlar = [
+                f"♠️ *{ticker} — SpadeHunter Detay*",
+                f"━━━━━━━━━━━━━━━━━━━",
+                f"Fiyat: {r['price']:.2f}₺  Skor: {r['composite']:.0f}/100  {onay}",
+                f"Sinyal: {r['sinyaller']}  Onay: {r['onay_count']}/8",
+                f"",
+                f"*── SKORLAR ──*",
+                f"N1(Birikim): {r['n1']:.0f}  N2(Kırılım): {r['n2']:.0f}",
+                f"N3(Kurumsal): {r['n3']:.0f}  N4(Sıkışma): {r['n4']:.0f}",
+                f"MainLine: {r['ml']:.2f}  SigLine: {r['sl']:.2f}  Hist: {r['hv']:.2f}",
+                f"ML[1]: {r['ml_prev']:.2f}  → {'↑ Yükseliyor' if r['ml'] > r['ml_prev'] else '↓ Düşüyor'}",
+                f"",
+                f"*── KRİTİK ──*",
+                f"{'✅' if r['t1_weekly'] else '❌'} 1 Haftalık Onay",
+                f"{'✅' if r['t2_fake'] else '❌'} 2 Fake Kırılım Yok",
+                f"",
+                f"*── ÖNEMLİ ──*",
+                f"{'✅' if r['t3_vol'] else '❌'} 3 Hacim: {r['rvol']:.1f}x {'ARTIYOR' if r['early_vol'] else 'ZAYIF'}",
+                f"{'✅' if r['t4_adx'] else '❌'} 4 ADX: {r['adx']:.0f}  {'GÜÇLÜ' if r['t4_adx'] else 'BEKLE'}",
+                f"",
+                f"*── DESTEKLEYİCİ ──*",
+                f"{'✅' if r['t5_cmf'] else '❌'} 5 Para Akışı (CMF): {r['cmf']:.3f}",
+                f"{'✅' if r['t6_vwap'] else '❌'} 6 VWAP: {r['vwap']:.2f} ({'Üstünde' if r['t6_vwap'] else 'Altında'})",
+                f"{'✅' if r['t7_macd'] else '❌'} 7 MACD Momentum {'↑' if r['t7_macd'] else '↓'}",
+                f"{'✅' if r['t8_rsi'] else '❌'} 8 RSI: {r['rsi']:.0f}  {'İDEAL (35-75)' if r['t8_rsi'] else 'DIŞINDA'}",
+                f"",
+                f"*── SİNYALLER ──*",
+                f"{'✅' if r['sig_b'] else '⬜'} B  Birikim (N1≥65 + ML crossover 0)",
+                f"{'✅' if r['sig_k'] else '⬜'} K  Kırılım (N2≥65 + EarlyVol + MACD Bull)",
+                f"{'✅' if r['sig_kp'] else '⬜'} KP Kurumsal (N3≥65 + CMF Strong + ML↑)",
+                f"{'✅' if r['sig_s'] else '⬜'} S  Sıkışma (N4≥60 + BB Sqz + ADX<20)",
+            ]
+            bot.send_message(chat_id, "\n".join(satirlar), parse_mode="Markdown")
+        except Exception as e:
+            bot.send_message(chat_id, f"❌ Hata: {str(e)[:150]}")
+    threading.Thread(target=_run, daemon=True).start()
 
 # ── /analiz komutu ───────────────────────────────────────────
 @bot.message_handler(commands=['analiz'])
