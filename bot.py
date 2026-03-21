@@ -2473,22 +2473,30 @@ def spade_weekly_score(df_w):
 
 def spade_indicators(ticker):
     """
-    SpadeHunterBot indikatörünü hesapla.
-    tamOnay, masterBuy ve sinyal tiplerini döndürür.
-    Minimum 120 bar gerekir.
+    SpadeHunterBot indikatörünü hesapla — HAFTALIK timeframe.
+    TradingView H (Haftalık) chart ile uyumlu.
+    Minimum 120 haftalık bar gerekir (~2.3 yıl, 5y veri yeterli).
     """
     df_d, df_w = get_data(ticker)
-    if df_d is None or df_d.empty or len(df_d) < 120:
+
+    # Haftalık veri yoksa günlükten resample et
+    if df_w is None or df_w.empty:
+        if df_d is not None and not df_d.empty:
+            df_w = resample_weekly(df_d)
+        else:
+            return None
+
+    if len(df_w) < 60:
         return None
 
-    d      = df_d.copy()
+    d      = df_w.copy()
 
-    # FIX: Seans içinde çalışıyorsa bugünün yarım barını çıkar
-    # Borsa İstanbul kapanış saati 18:00 TR
+    # Haftalık: mevcut haftanın barı henüz kapanmamış olabilir
+    # Pazartesi-Cuma arası → son bar bu haftanın yarım barı → çıkar
     tr_now = datetime.now(pytz.timezone("Europe/Istanbul"))
-    bist_kapali = tr_now.hour >= 18 or tr_now.hour < 10 or tr_now.weekday() >= 5
-    if not bist_kapali and len(d) > 1:
-        d = d.iloc[:-1]  # Bugünün yarım barını çıkar
+    hafta_icinde = tr_now.weekday() < 5  # Pzt=0 ... Cum=4
+    if hafta_icinde and len(d) > 1:
+        d = d.iloc[:-1]  # Bu haftanın yarım barını çıkar
 
     close  = d["Close"]
     high   = d["High"]
@@ -2563,8 +2571,9 @@ def spade_indicators(ticker):
         ((rsi14.shift(1) <= 50) & (rsi14        > 50))
     )
 
-    # ── Weekly onay ──
-    weekly_ok = spade_weekly_score(df_w)
+    # ── Uzun vade onayı (t1) — Günlük veri üzerinden haftalık mantık ──
+    # Artık ana hesap zaten haftalık; t1 = aylık/uzun vade filtresi
+    weekly_ok = spade_weekly_score(df_d) if (df_d is not None and not df_d.empty) else False
 
     # ── Composite skorlar (tüm seri) ──
     c1 = pd.Series(0.0, index=close.index)
