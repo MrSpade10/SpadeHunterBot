@@ -1685,21 +1685,30 @@ def tara_indicators(ticker, df_d=None):
     _close_last = close.iloc[-1]; _open_last = open_.iloc[-1]
     kapanis_yukari = (not pd.isna(_close_last) and not pd.isna(_open_last) and float(_close_last) > float(_open_last))
 
+    # ── SMA ──
     sma20 = calc_sma(close, 20); sma50 = calc_sma(close, 50); sma200 = calc_sma(close, 200)
     s20 = float(sma20.iloc[-1]) if not sma20.isna().iloc[-1] else None
     s50 = float(sma50.iloc[-1]) if not sma50.isna().iloc[-1] else None
     s200 = float(sma200.iloc[-1]) if not sma200.isna().iloc[-1] else None
 
+    # ── RSI ──
     rsi_s = calc_rsi(close, 14).dropna()
     rsi = float(rsi_s.iloc[-1]) if len(rsi_s) >= 1 else None
     rsi_prev = float(rsi_s.iloc[-2]) if len(rsi_s) >= 2 else None
-    rsi_yukari_3g = (len(rsi_s) >= 3 and float(rsi_s.iloc[-1]) > float(rsi_s.iloc[-2]) > float(rsi_s.iloc[-3]))
+    rsi_prev2 = float(rsi_s.iloc[-3]) if len(rsi_s) >= 3 else None
+    rsi_yukari_3g = (rsi is not None and rsi_prev is not None and rsi_prev2 is not None and
+                     rsi > rsi_prev > rsi_prev2)
+    # RSI 30 yukarı kesim (strateji 3 için)
+    rsi_30_cross_up = (rsi_prev is not None and rsi is not None and rsi_prev <= 30 and rsi > 30)
+    # RSI 50 yukarı kesim
+    rsi_50_cross_up = (rsi_prev is not None and rsi is not None and rsi_prev <= 50 and rsi > 50)
 
+    # ── MACD ──
     macd_line, macd_sig_line = calc_macd(close)
     macd_val = float(macd_line.iloc[-1]) if not macd_line.isna().iloc[-1] else None
     macd_sig_val = float(macd_sig_line.iloc[-1]) if not macd_sig_line.isna().iloc[-1] else None
-    macd_prev = float(macd_line.iloc[-2]) if len(macd_line)>=2 and not pd.isna(macd_line.iloc[-2]) else None
-    macd_sig_prev = float(macd_sig_line.iloc[-2]) if len(macd_sig_line)>=2 and not pd.isna(macd_sig_line.iloc[-2]) else None
+    macd_prev = float(macd_line.iloc[-2]) if len(macd_line) >= 2 and not pd.isna(macd_line.iloc[-2]) else None
+    macd_sig_prev = float(macd_sig_line.iloc[-2]) if len(macd_sig_line) >= 2 and not pd.isna(macd_sig_line.iloc[-2]) else None
 
     if macd_val is not None and macd_sig_val is not None:
         hist_cur = macd_val - macd_sig_val
@@ -1710,23 +1719,42 @@ def tara_indicators(ticker, df_d=None):
     else:
         macd_hist_pozitif = False; macd_hist_artiyor = False; macd_hist_pozitif_kesim = False
 
+    macd_above_signal = (macd_val is not None and macd_sig_val is not None and macd_val > macd_sig_val)
     macd_fresh_cross = (macd_val is not None and macd_sig_val is not None and
                         macd_prev is not None and macd_sig_prev is not None and
                         macd_val > macd_sig_val and macd_prev <= macd_sig_prev)
 
+    # ── ADX ──
     adx_s = calc_adx(d)
     adx = float(adx_s.iloc[-1]) if not adx_s.isna().iloc[-1] else None
 
+    # ── ATR ──
+    atr_s = calc_atr(d, 14)
+    atr = float(atr_s.iloc[-1]) if not atr_s.isna().iloc[-1] else None
+    atr_pct = (atr / price * 100) if (atr and price > 0) else None
+
+    # ── Bollinger ──
     bb_width_s = calc_bollinger_width(close)
     bb_width = float(bb_width_s.iloc[-1]) if not bb_width_s.isna().iloc[-1] else None
     _bb_avg20_raw = bb_width_s.rolling(20).mean().iloc[-1]
-    bb_avg20 = float(_bb_avg20_raw) if len(bb_width_s)>20 and not pd.isna(_bb_avg20_raw) else None
+    bb_avg20 = float(_bb_avg20_raw) if len(bb_width_s) > 20 and not pd.isna(_bb_avg20_raw) else None
     bb_width_low = (bb_width is not None and bb_avg20 is not None and bb_width < bb_avg20)
     bb_avg60_raw = bb_width_s.rolling(60).mean().iloc[-1]
-    bb_avg60 = float(bb_avg60_raw) if (len(bb_width_s)>60 and not pd.isna(bb_avg60_raw)) else bb_avg20
-    bb_width_low60 = (bb_width is not None and bb_avg60 is not None and bb_avg60>0 and bb_width < bb_avg60*0.70)
-    bb_width_low65 = (bb_width is not None and bb_avg60 is not None and bb_avg60>0 and bb_width < bb_avg60*0.65)
+    bb_avg60 = float(bb_avg60_raw) if (len(bb_width_s) > 60 and not pd.isna(bb_avg60_raw)) else bb_avg20
+    bb_width_low60 = (bb_width is not None and bb_avg60 is not None and bb_avg60 > 0 and bb_width < bb_avg60 * 0.70)
+    bb_width_low65 = (bb_width is not None and bb_avg60 is not None and bb_avg60 > 0 and bb_width < bb_avg60 * 0.65)
+    # Bollinger pozisyonu
+    bb_sma = calc_sma(close, 20)
+    bb_std = close.rolling(20).std()
+    bb_upper = bb_sma + 2 * bb_std
+    bb_lower = bb_sma - 2 * bb_std
+    bb_pct_b = None
+    if not bb_upper.isna().iloc[-1] and not bb_lower.isna().iloc[-1]:
+        bw = float(bb_upper.iloc[-1]) - float(bb_lower.iloc[-1])
+        if bw > 0:
+            bb_pct_b = (price - float(bb_lower.iloc[-1])) / bw
 
+    # ── VWAP ──
     typical_price = (high + low + close) / 3
     vwap_num = (typical_price * volume).rolling(20).sum()
     vwap_den = volume.rolling(20).sum()
@@ -1735,29 +1763,98 @@ def tara_indicators(ticker, df_d=None):
     vwap = float(vwap_raw) if (vwap_raw is not None and not pd.isna(vwap_raw)) else None
     price_above_vwap = (vwap is not None and price > vwap)
 
+    # ── HACİM ──
     vol_avg20_raw = volume.rolling(20).mean().iloc[-1]
     vol_avg20 = float(vol_avg20_raw) if not pd.isna(vol_avg20_raw) else 0.0
     vol_cur = float(volume.iloc[-1]) if not pd.isna(volume.iloc[-1]) else 0.0
     rel_vol = vol_cur / vol_avg20 if vol_avg20 > 0 else 0
+    vol_above_avg = vol_cur > vol_avg20
 
+    # Hacim trendi (son 3 gün artan)
+    vol_trend_up = False
+    if len(volume) >= 4:
+        v1 = float(volume.iloc[-3]) if not pd.isna(volume.iloc[-3]) else 0
+        v2 = float(volume.iloc[-2]) if not pd.isna(volume.iloc[-2]) else 0
+        v3 = float(volume.iloc[-1]) if not pd.isna(volume.iloc[-1]) else 0
+        vol_trend_up = (v3 > v2 > v1 > 0)
+
+    # ── OBV ──
+    obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
+    obv_ema21 = obv.ewm(span=21, adjust=False).mean()
+    obv_bullish = float(obv.iloc[-1]) > float(obv_ema21.iloc[-1]) if not obv.isna().iloc[-1] else False
+
+    # Alım baskısı (son 10 bar)
+    buy_pressure = None
+    if len(d) >= 10:
+        last10 = d.iloc[-10:].copy()
+        last10["up"] = last10["Close"] > last10["Close"].shift(1)
+        up_vol = last10.loc[last10["up"], "Volume"].sum()
+        total_vol = last10["Volume"].sum()
+        if total_vol > 0:
+            buy_pressure = up_vol / total_vol
+
+    # ── PERFORMANS ──
     perf_1d = perf_pct(close, 1); perf_5d = perf_pct(close, 5)
     perf_21d = perf_pct(close, 21); perf_63d = perf_pct(close, 63); perf_252d = perf_pct(close, 252)
 
+    # ── DİVERJANS (basit) ──
+    has_bullish_div = False; has_bearish_div = False
+    try:
+        d_copy = d.copy(); d_copy["RSI"] = calc_rsi(d_copy["Close"], 14)
+        dt, _ = detect_divergence(d_copy, window=60)
+        if dt == "Bullish Diverjans": has_bullish_div = True
+        elif dt == "Bearish Diverjans": has_bearish_div = True
+    except: pass
+
+    # ── DESTEK/DİRENÇ YAKINLIĞI ──
+    recent_low_20 = float(low.iloc[-20:].min()) if len(low) >= 20 else None
+    recent_high_20 = float(high.iloc[-20:].max()) if len(high) >= 20 else None
+    near_support = (recent_low_20 is not None and price > 0 and
+                    abs(price - recent_low_20) / price * 100 < 3)
+    near_resistance = (recent_high_20 is not None and price > 0 and
+                       abs(price - recent_high_20) / price * 100 < 3)
+
+    # ── SMA50 YAKINLIĞI ──
+    near_sma50 = (s50 is not None and s50 > 0 and abs(price - s50) / s50 * 100 <= 5)
+
+    # ── Üst üste yeşil mum sayısı ──
+    green_streak = 0
+    for j in range(1, min(11, len(d))):
+        c_j = float(close.iloc[-j]); o_j = float(open_.iloc[-j])
+        if not pd.isna(c_j) and not pd.isna(o_j) and c_j > o_j:
+            green_streak += 1
+        else: break
+
+    # ── Kâr marjı proxy (son çeyrek vs önceki yıl) ──
+    earnings_momentum = False
+    if perf_63d is not None and perf_252d is not None:
+        if perf_63d > 15 and perf_252d > 30:
+            earnings_momentum = True
+
     return {
         "ticker": ticker, "price": price, "kapanis_yukari": kapanis_yukari,
-        "sma20": s20, "sma50": s50, "sma200": s200,
+        "sma20": s20, "sma50": s50, "sma200": s200, "near_sma50": near_sma50,
         "rsi": rsi, "rsi_prev": rsi_prev, "rsi_yukari_3g": rsi_yukari_3g,
+        "rsi_30_cross_up": rsi_30_cross_up, "rsi_50_cross_up": rsi_50_cross_up,
         "macd": macd_val, "macd_sig": macd_sig_val,
+        "macd_above_signal": macd_above_signal,
         "macd_fresh_cross": macd_fresh_cross,
         "macd_hist_pozitif": macd_hist_pozitif,
         "macd_hist_artiyor": macd_hist_artiyor,
         "macd_hist_pozitif_kesim": macd_hist_pozitif_kesim,
-        "adx": adx, "bb_width": bb_width, "bb_width_low": bb_width_low,
+        "adx": adx, "atr": atr, "atr_pct": atr_pct,
+        "bb_width": bb_width, "bb_width_low": bb_width_low,
         "bb_width_low60": bb_width_low60, "bb_width_low65": bb_width_low65,
+        "bb_pct_b": bb_pct_b,
         "vwap": vwap, "price_above_vwap": price_above_vwap,
         "vol_avg20": vol_avg20, "vol_cur": vol_cur, "rel_vol": rel_vol,
+        "vol_above_avg": vol_above_avg, "vol_trend_up": vol_trend_up,
+        "obv_bullish": obv_bullish, "buy_pressure": buy_pressure,
         "perf_1d": perf_1d, "perf_5d": perf_5d,
         "perf_21d": perf_21d, "perf_63d": perf_63d, "perf_252d": perf_252d,
+        "has_bullish_div": has_bullish_div, "has_bearish_div": has_bearish_div,
+        "near_support": near_support, "near_resistance": near_resistance,
+        "green_streak": green_streak, "earnings_momentum": earnings_momentum,
     }
 
 # ═══════════════════════════════════════════════
