@@ -457,6 +457,7 @@ def _set_bot_commands():
         telebot.types.BotCommand("al","Trade kitabı — alış: /al THYAO 145.50 100 sebep"),
         telebot.types.BotCommand("sat","Trade kitabı — satış + AI yorum: /sat THYAO 162.00 100 sebep"),
         telebot.types.BotCommand("kitap","Trade geçmişi: /kitap | /kitap ozet | /kitap acik"),
+        telebot.types.BotCommand("karzarar","Kar/Zarar hesapla: /karzarar THYAO 145 162 100"),
         telebot.types.BotCommand("check","Tara: /check all | /check 50 | /check THYAO"),
         telebot.types.BotCommand("backtest","Strateji backtest: /backtest 1 THYAO"),
         telebot.types.BotCommand("addall","BIST hisselerini ekle"),
@@ -3062,6 +3063,203 @@ def cmd_kitap(message):
     safe_send(chat_id, "\n".join(satirlar))
 
 # ═══════════════════════════════════════════════
+# KAR ZARAR HESAPLAYICI
+# ═══════════════════════════════════════════════
+@bot.message_handler(commands=['karzarar'])
+def cmd_karzarar(message):
+    chat_id = str(message.chat.id)
+    parts = message.text.strip().split()
+    call_log("karzarar", chat_id)
+
+    if len(parts) < 2:
+        bot.reply_to(message,
+            "💰 *KAR/ZARAR HESAPLAYICI*\n━━━━━━━━━━━━━━━━━━━\n\n"
+            "*1) Trade Hesabı:*\n"
+            "/karzarar THYAO 145.50 162.00 100\n"
+            "  Ticker AlısFiyatı SatışFiyatı Adet\n\n"
+            "*2) Risk Hesabı:*\n"
+            "/karzarar risk 5000 5\n"
+            "  risk Portföy RiskOrani%\n\n"
+            "*3) Açık Pozisyon:*\n"
+            "/karzarar acik THYAO 162.00\n"
+            "  acik Ticker GuncelFiyat\n\n"
+            "*4) Pozisyon Boyutu:*\n"
+            "/karzarar pozisyon 10000 2 145.50 140.00\n"
+            "  pozisyon Portföy Risk% GirisFiyati StopLoss",
+            parse_mode='Markdown')
+        return
+
+    mod = parts[1].lower()
+
+    # MOD 1: Trade Hesabı — /karzarar THYAO 145.50 162.00 100
+    if mod not in ("risk", "acik", "pozisyon"):
+        try:
+            ticker = parts[1].upper().replace(".IS","")
+            alis   = float(parts[2].replace(",","."))
+            satis  = float(parts[3].replace(",","."))
+            adet   = float(parts[4].replace(",","."))
+        except (IndexError, ValueError):
+            bot.reply_to(message, "❌ Format hatali!\nOrnek: /karzarar THYAO 145.50 162.00 100"); return
+
+        if alis <= 0 or satis <= 0 or adet <= 0:
+            bot.reply_to(message, "❌ Degerler sifirdan buyuk olmali."); return
+
+        alis_top   = alis * adet
+        satis_top  = satis * adet
+        kaz_tl     = satis_top - alis_top
+        kaz_pct    = (satis - alis) / alis * 100
+        komisyon   = alis_top * 0.001 + satis_top * 0.001
+        net_kaz    = kaz_tl - komisyon
+        emoji      = "🟢" if kaz_tl >= 0 else "🔴"
+        yon        = "KAR" if kaz_tl >= 0 else "ZARAR"
+
+        bot.reply_to(message,
+            f"💰 *{ticker} — Trade Hesabi*\n━━━━━━━━━━━━━━━━━━━\n"
+            f"📥 Alis:  {adet:.0f} x {alis:.2f}TL = *{alis_top:,.0f}TL*\n"
+            f"📤 Satis: {adet:.0f} x {satis:.2f}TL = *{satis_top:,.0f}TL*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{emoji} *{yon}: {'+' if kaz_tl>=0 else ''}{kaz_tl:,.0f}TL "
+            f"({'+' if kaz_pct>=0 else ''}{kaz_pct:.2f}%)*\n"
+            f"💸 Tahmini komisyon: ~{komisyon:,.0f}TL\n"
+            f"💎 *Net {yon}: {'+' if net_kaz>=0 else ''}{net_kaz:,.0f}TL*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📊 Alis degeri:  {alis_top:,.0f}TL\n"
+            f"📊 Satis degeri: {satis_top:,.0f}TL\n"
+            f"📈 Getiri: %{kaz_pct:.2f}",
+            parse_mode='Markdown')
+        return
+
+    # MOD 2: Risk Hesabı — /karzarar risk 5000 5
+    if mod == "risk":
+        try:
+            portfolio = float(parts[2].replace(",","."))
+            risk_pct  = float(parts[3].replace(",","."))
+        except (IndexError, ValueError):
+            bot.reply_to(message, "❌ Format hatali!\nOrnek: /karzarar risk 5000 5"); return
+
+        if portfolio <= 0 or risk_pct <= 0:
+            bot.reply_to(message, "❌ Degerler sifirdan buyuk olmali."); return
+
+        max_risk    = portfolio * risk_pct / 100
+        cok_agresif = portfolio * 0.10
+        agresif     = portfolio * 0.05
+        orta        = portfolio * 0.02
+        muhafazakar = portfolio * 0.01
+
+        bot.reply_to(message,
+            f"📊 *Risk Hesabi*\n━━━━━━━━━━━━━━━━━━━\n"
+            f"💼 Portfoy: *{portfolio:,.0f}TL*\n"
+            f"⚠️ Risk Orani: *%{risk_pct}*\n"
+            f"🔴 *Max Kayip: {max_risk:,.0f}TL*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📉 *Risk Seviyeleri:*\n"
+            f"  🟥 Cok Agresif (%10): {cok_agresif:,.0f}TL\n"
+            f"  🟧 Agresif (%5):      {agresif:,.0f}TL\n"
+            f"  🟨 Orta (%2):         {orta:,.0f}TL\n"
+            f"  🟩 Muhafazakar (%1):  {muhafazakar:,.0f}TL\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"💡 Altin Kural: Tek islemde portfoyun\n"
+            f"   max %2-5 riske at.\n"
+            f"   Secimin: %{risk_pct} = {max_risk:,.0f}TL\n\n"
+            f"📌 Pozisyon boyutu icin:\n"
+            f"/karzarar pozisyon {portfolio:.0f} {risk_pct} GirisFiyati StopLoss",
+            parse_mode='Markdown')
+        return
+
+    # MOD 3: Açık Pozisyon — /karzarar acik THYAO 162.00
+    if mod == "acik":
+        try:
+            ticker = parts[2].upper().replace(".IS","")
+            guncel = float(parts[3].replace(",","."))
+        except (IndexError, ValueError):
+            bot.reply_to(message, "❌ Format hatali!\nOrnek: /karzarar acik THYAO 162.00"); return
+
+        acik = kitap_acik_get(chat_id)
+        if ticker not in acik:
+            bot.reply_to(message,
+                f"❌ *{ticker}* acik pozisyon kaydi yok.\n"
+                f"/al {ticker} FIYAT ADET ile kaydet.",
+                parse_mode='Markdown'); return
+
+        poz       = acik[ticker]
+        alis      = float(poz["fiyat"])
+        adet      = float(poz["adet"])
+        alis_top  = alis * adet
+        gun_top   = guncel * adet
+        kaz_tl    = gun_top - alis_top
+        kaz_pct   = (guncel - alis) / alis * 100
+        emoji     = "🟢" if kaz_tl >= 0 else "🔴"
+        yon       = "KAR" if kaz_tl >= 0 else "ZARAR"
+        hedef1    = alis * 1.10
+        hedef2    = alis * 1.20
+        stop      = alis * 0.97
+
+        bot.reply_to(message,
+            f"📂 *{ticker} — Acik Pozisyon*\n━━━━━━━━━━━━━━━━━━━\n"
+            f"📥 Alis:   {adet:.0f} x {alis:.2f}TL = {alis_top:,.0f}TL\n"
+            f"💹 Guncel: {adet:.0f} x {guncel:.2f}TL = {gun_top:,.0f}TL\n"
+            f"📅 Tarih:  {poz.get('tarih','?')}\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"{emoji} *Anlik {yon}: {'+' if kaz_tl>=0 else ''}{kaz_tl:,.0f}TL "
+            f"({'+' if kaz_pct>=0 else ''}{kaz_pct:.2f}%)*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 *Hedefler:*\n"
+            f"  +%10 => {hedef1:.2f}TL ({(hedef1-guncel)/guncel*100:+.1f}% uzakta)\n"
+            f"  +%20 => {hedef2:.2f}TL ({(hedef2-guncel)/guncel*100:+.1f}% uzakta)\n"
+            f"🛑 *Stop Loss:*\n"
+            f"  -%3  => {stop:.2f}TL ({(stop-guncel)/guncel*100:+.1f}% uzakta)",
+            parse_mode='Markdown')
+        return
+
+    # MOD 4: Pozisyon Boyutu — /karzarar pozisyon 10000 2 145.50 140.00
+    if mod == "pozisyon":
+        try:
+            portfolio = float(parts[2].replace(",","."))
+            risk_pct  = float(parts[3].replace(",","."))
+            giris     = float(parts[4].replace(",","."))
+            stop      = float(parts[5].replace(",","."))
+        except (IndexError, ValueError):
+            bot.reply_to(message,
+                "❌ Format hatali!\n"
+                "Ornek: /karzarar pozisyon 10000 2 145.50 140.00"); return
+
+        if giris <= stop:
+            bot.reply_to(message, "❌ Giris fiyati stop loss'tan yuksek olmali!"); return
+        if portfolio <= 0 or risk_pct <= 0:
+            bot.reply_to(message, "❌ Degerler sifirdan buyuk olmali."); return
+
+        max_risk   = portfolio * risk_pct / 100
+        risk_per   = giris - stop
+        risk_pct_p = risk_per / giris * 100
+        adet       = max_risk / risk_per
+        pozisyon   = adet * giris
+        hedef1     = giris + risk_per * 2
+        hedef2     = giris + risk_per * 3
+        kar1       = (hedef1 - giris) * adet
+        kar2       = (hedef2 - giris) * adet
+
+        bot.reply_to(message,
+            f"📐 *Pozisyon Boyutu Hesabi*\n━━━━━━━━━━━━━━━━━━━\n"
+            f"💼 Portfoy:    *{portfolio:,.0f}TL*\n"
+            f"⚠️ Risk Orani: *%{risk_pct}*\n"
+            f"🔴 Max Kayip:  *{max_risk:,.0f}TL*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"📥 Giris: {giris:.2f}TL\n"
+            f"🛑 Stop:  {stop:.2f}TL (-%{risk_pct_p:.1f})\n"
+            f"📊 Hisse basi risk: {risk_per:.2f}TL\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"✅ *Ideal Pozisyon:*\n"
+            f"  📦 Adet:    *{adet:.0f} hisse*\n"
+            f"  💰 Deger:   *{pozisyon:,.0f}TL*\n"
+            f"  📊 Portfoy: *%{pozisyon/portfolio*100:.1f}*\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"🎯 *Hedefler (Risk/Odul):*\n"
+            f"  1:2 => {hedef1:.2f}TL = +{kar1:,.0f}TL\n"
+            f"  1:3 => {hedef2:.2f}TL = +{kar2:,.0f}TL",
+            parse_mode='Markdown')
+        return
+
+# ═══════════════════════════════════════════════
 # AI MODÜLÜ — Gemini + Groq
 # ═══════════════════════════════════════════════
 RSS_FEEDS = {
@@ -3760,7 +3958,11 @@ def send_welcome(message):
         "📒 *── Trade Kitabı ──*\n"
         "/al THYAO 145.50 100 sebep\n"
         "/sat THYAO 162.00 100 sebep\n"
-        "/kitap | /kitap ozet | /kitap acik\n\n"
+        "/kitap | /kitap ozet | /kitap acik\n"
+        "/karzarar THYAO 145 162 100 — Trade hesabı\n"
+        "/karzarar risk 5000 5 — Risk hesabı\n"
+        "/karzarar acik THYAO 162 — Açık pozisyon\n"
+        "/karzarar pozisyon 10000 2 145 140 — Pozisyon boyutu\n\n"
         "🛠 *── Sistem ──*\n"
         "/kontrolbot — Sağlık testi\n"
         "/status — Bot durumu\n"
