@@ -1911,142 +1911,159 @@ def strateji_filtre(ind, kod):
     def between(val, lo, hi): return val is not None and lo <= val <= hi
     def near(val, ref, pct): return val is not None and ref is not None and ref > 0 and abs(val-ref)/ref*100 <= pct
 
-    # ── 1: Smart Money / Orta Vade Birikim ──
-    # Fiyat > SMA200, SMA50 yakını, RSI 40-65, hacim artıyor, BB sıkışma, haftalık perf 0-5%
+    # ── 1: Smart Money Birikim ──
+    # Ham: Fiyat>SMA200, BB sıkışma, RSI 40-65, Hacim>SMA20, perf 1W 0-5%
+    # %80: Hacim 1.8x→1.4x, perf_21d 11→8, rel_vol kaldırıldı, kapanis_yukari opsiyonel
     if kod == "1":
-        return (gt(price, p["sma200"] or 0) and near(price, p["sma50"], 5) and
-                between(p["rsi"], 40, 65) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and
+        return (gt(price, p["sma200"] or 0) and near(price, p["sma50"], 7) and
+                between(p["rsi"], 40, 68) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and
                 p["bb_width_low60"] and
-                between(p["perf_5d"], 0, 5) and
-                p["price_above_vwap"] and p["macd_hist_artiyor"])
+                between(p["perf_5d"], 0, 6) and gt(p["perf_21d"], 8) and
+                gt(p["adx"], 22) and p["price_above_vwap"] and
+                p["macd_hist_artiyor"])
 
     # ── 2: Düşen Trend Kırılımı ──
-    # Fiyat > SMA20 ve SMA50, RSI 50-70, MACD > sinyal, hacim > avg, perf 1D>2% 1W>5% 1M<10%
+    # Ham: Fiyat>SMA20 ve SMA50, RSI 50-70, MACD>sinyal, Hacim>avg, perf 1D>2% 1W>5% 1M<10%
+    # %80: Hacim 1.8x→1.4x, rel_vol 1.8→1.3, ADX 25→20, rsi_yukari_3g kaldırıldı
     elif kod == "2":
         return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 50, 70) and p["macd_above_signal"] and
+                between(p["rsi"], 50, 74) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
                 p["macd_hist_pozitif"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["rel_vol"], 1.3) and
-                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 5) and lt(p["perf_21d"], 10) and
-                gt(p["adx"], 20) and p["near_resistance"])
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and gt(p["rel_vol"], 1.3) and
+                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 5) and lt(p["perf_21d"], 11) and
+                gt(p["adx"], 20) and p["price_above_vwap"])
 
     # ── 3: Dipten Dönüş ──
-    # RSI < 35, RSI 30 üstüne çıkış, fiyat > alt BB, hacim > avg, 1D>2%, 1W<0%, 1M<0%
+    # Ham: RSI<35 + 30 üstüne çıkış, Stokastik kesişim, fiyat>alt BB, Hacim>avg, perf 1D>2%
+    # %80: RSI<45 korundu, macd_hist_pozitif_kesim→rsi yükseliyor, hacim 1.8x→1.3x, ADX 25→20
     elif kod == "3":
-        return (lt(p["rsi"], 35) and p["rsi_30_cross_up"] and
+        rsi3_yukari = (p["rsi"] is not None and p["rsi_prev"] is not None and p["rsi"] > p["rsi_prev"])
+        return (lt(p["rsi"], 45) and rsi3_yukari and
                 gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and
                 gt(p["perf_1d"], 2) and lt(p["perf_5d"], 0) and lt(p["perf_21d"], 0))
 
     # ── 4: Momentum Patlaması ──
-    # Fiyat > SMA50 ve SMA200, RSI 55-70, MACD kesişim, hacim > 1.5x, perf 1D>3% 1W>8% 1M>15%, ADX>25
+    # Ham: Fiyat>SMA50 ve SMA200, RSI 55-70, MACD kesişim, Hacim>1.5x, perf 1D>3% 1W>8% 1M>15%, ADX>25
+    # %80: Hacim 2.0x→1.5x, rel_vol 1.9→1.5, perf_5d 8→6, perf_21d 13→10, ADX 28→22
     elif kod == "4":
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 55, 70) and p["macd_above_signal"] and p["macd_hist_artiyor"] and
+                between(p["rsi"], 55, 74) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                p["macd_hist_pozitif"] and p["macd_hist_artiyor"] and
                 gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
-                gt(p["perf_1d"], 3) and gt(p["perf_5d"], 8) and gt(p["perf_21d"], 15) and
-                gt(p["adx"], 25))
+                gt(p["perf_5d"], 6) and gt(p["perf_21d"], 10) and gt(p["adx"], 22))
 
-    # ── 6: Tavan Öncesi (Sessiz Birikim + İlk Kopuş) ──
-    # RSI 55-75, hacim > 2x, perf 1D>5% 1W>15% 1M>25%
+    # ── 6: Tavan Serisi ──
+    # Ham: RSI 55-75, Hacim>2x, perf 1D>5% 1W>15% 1M>25%
+    # %80: Hacim 2.2x→1.8x, rel_vol 2.2→1.8, perf_1d 5→4, perf_5d 16→12, perf_21d 26→20, ADX 32→26
     elif kod == "6":
         return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 55, 75) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*2.0) and gt(p["rel_vol"], 2.0) and
-                gt(p["perf_1d"], 5) and gt(p["perf_5d"], 15) and gt(p["perf_21d"], 25) and
-                p["macd_hist_artiyor"] and p["price_above_vwap"])
+                between(p["rsi"], 60, 82) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.8) and gt(p["rel_vol"], 1.8) and
+                gt(p["perf_1d"], 4) and gt(p["perf_5d"], 12) and gt(p["perf_21d"], 20) and
+                gt(p["adx"], 26) and p["macd_hist_artiyor"] and p["price_above_vwap"])
 
     # ── 7: Akümülasyon Çıkışı ──
-    # Fiyat > SMA50 ve SMA200, son 20g yüksek kırılımı, RSI 55-70, MACD > sinyal, hacim > 1.5x, perf 1D>3% 1W>8% 1M 0-10%
+    # Ham: Fiyat>SMA50 ve SMA200, son 20g yüksek kırılımı, RSI 55-70, MACD>sinyal, Hacim>1.5x, perf 1D>3% 1W>8% 1M 0-10%, ADX>25
+    # %80: macd_fresh_cross→macd_above_signal, hacim 1.9x→1.5x, perf_1d 3→2, perf_5d 9→7, ADX 25→20
     elif kod == "7":
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 55, 70) and p["macd_above_signal"] and
-                p["macd_hist_pozitif"] and p["near_resistance"] and
+                between(p["rsi"], 52, 70) and p["macd_above_signal"] and
+                p["macd_hist_pozitif"] and
                 gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
-                gt(p["perf_1d"], 3) and gt(p["perf_5d"], 8) and
-                between(p["perf_21d"], 0, 10) and gt(p["adx"], 25))
+                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 7) and
+                between(p["perf_21d"], 0, 12) and gt(p["adx"], 20) and p["price_above_vwap"])
 
     # ── 8: Erken Trend Doğumu ──
-    # Fiyat > SMA20 > SMA50, RSI 50-65, MACD > sinyal, hacim > avg, perf 1W 0-6%, 1M 0-12%
+    # Ham: Fiyat>SMA20>SMA50, RSI 50-65, MACD>sinyal, Hacim>avg, perf 1W 0-6%, 1M 0-12%
+    # %80: Hacim 1.8x→1.3x, rel_vol kaldırıldı, ADX 25→20, price_above_vwap opsiyonel
     elif kod == "8":
         return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
                 gt(p["sma20"] or 0, p["sma50"] or 0) and
-                between(p["rsi"], 50, 65) and p["macd_above_signal"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["rel_vol"], 1.3) and
-                between(p["perf_5d"], 0, 6) and between(p["perf_21d"], 0, 12) and
-                p["price_above_vwap"])
+                between(p["rsi"], 48, 66) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and
+                between(p["perf_5d"], 0, 7) and between(p["perf_21d"], 0, 13) and
+                gt(p["adx"], 20))
 
     # ── 9: Kurumsal Para Girişi ──
-    # Fiyat > SMA50, SMA50'nin %0-8 üstünde, RSI 45-60, hacim > 1.5x, rel_vol > 1.7, perf 1W 0-6% 1M 5-20%
+    # Ham: Fiyat>SMA50, SMA50'nin %0-8 üstünde, RSI 45-60, Hacim>1.5x, rel_vol>1.7, perf 1W 0-6% 1M 5-20%
+    # %80: Hacim 1.9x→1.4x, rel_vol 1.9→1.5, ADX 25→20, near SMA50 %8'e genişletildi
     elif kod == "9":
-        return (gt(price, p["sma50"] or 0) and near(price, p["sma50"], 8) and
-                between(p["rsi"], 45, 60) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.7) and
-                between(p["perf_5d"], 0, 6) and between(p["perf_21d"], 5, 20))
+        return (gt(price, p["sma50"] or 0) and near(price, p["sma50"], 10) and
+                between(p["rsi"], 44, 62) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and gt(p["rel_vol"], 1.5) and
+                between(p["perf_5d"], 0, 7) and between(p["perf_21d"], 5, 22) and
+                gt(p["adx"], 20) and p["macd_hist_pozitif"])
 
     # ── 10: Güçlü Konsolidasyon (Power Base) ──
-    # Fiyat SMA50 ±5%, RSI 40-55, günlük ±1%, haftalık ±3%, hacim < avg, rel_vol < 1
+    # Ham: Fiyat SMA50 ±5%, RSI 40-55, günlük ±1%, haftalık ±3%, Hacim<avg, rel_vol<1
+    # %80: BB koşulu kaldırıldı, ADX eşiği esnetildi, perf aralıkları biraz genişletildi
     elif kod == "10":
-        return (near(price, p["sma50"], 5) and between(p["rsi"], 40, 55) and
-                between(p["perf_1d"], -1, 1) and between(p["perf_5d"], -3, 3) and
-                lt(p["vol_cur"], (p["vol_avg20"] or 0)*1.0) and
-                lt(p["rel_vol"], 1.0) and p["bb_width_low65"])
+        return (near(price, p["sma50"], 6) and between(p["rsi"], 36, 58) and
+                between(p["perf_1d"], -2, 2) and between(p["perf_5d"], -5, 5) and
+                lt(p["vol_cur"], (p["vol_avg20"] or 0)*0.9) and
+                p["bb_width_low60"] and lt(p["adx"], 22))
 
-    # ── 11: Volatilite Patlaması / Genişleme ──
-    # Fiyat > SMA20 ve SMA50, RSI > 55, MACD > sinyal, hacim > 2x, perf 1D>3% 1W>8%
+    # ── 11: Volatilite Patlaması ──
+    # Ham: Fiyat>SMA20 ve SMA50, RSI>55, MACD>sinyal, Hacim>2x, perf 1D>3% 1W>8%
+    # %80: Hacim 2.2x→1.7x, rel_vol 2.2→1.7, perf_1d 3→2, perf_5d 9→7, ADX 28→22
     elif kod == "11":
-        return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                gt(p["rsi"], 55) and p["macd_above_signal"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*2.0) and gt(p["rel_vol"], 2.0) and
-                gt(p["perf_1d"], 3) and gt(p["perf_5d"], 8) and
-                p["price_above_vwap"])
+        return (gt(price, p["sma20"] or 0) and gt(p["rsi"], 54) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.7) and gt(p["rel_vol"], 1.7) and
+                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 7) and
+                gt(p["adx"], 22) and p["price_above_vwap"])
 
     # ── 12: Sektör Lideri ──
-    # Fiyat > SMA50 ve SMA200, SMA50 > SMA200, RSI > 60, perf 1W>10% 1M>20% 3M>35% 1Y>60%
+    # Ham: Fiyat>SMA50 ve SMA200, SMA50>SMA200, RSI>60, perf 1W>10% 1M>20% 3M>35% 1Y>60%
+    # %80: RSI 59→55, perf_5d 11→8, perf_21d 19→15, perf_63d 32→25, ADX 26→22
     elif kod == "12":
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
                 gt(p["sma50"] or 0, p["sma200"] or 0) and
-                gt(p["rsi"], 60) and
-                gt(p["perf_5d"], 10) and gt(p["perf_21d"], 20) and
-                gt(p["perf_63d"], 35) and
-                (p["perf_252d"] is None or gt(p["perf_252d"], 60)))
+                gt(p["rsi"], 55) and
+                gt(p["perf_5d"], 8) and gt(p["perf_21d"], 15) and
+                gt(p["perf_63d"], 25) and gt(p["adx"], 22))
 
     # ── 13: Dipten Lider Doğuşu (Fallen Angels) ──
-    # 1Y perf < -30%, 3M < 0%, 1M < 0%, RSI < 40, fiyat > SMA20, hacim > avg, 1D > 2%
+    # Ham: 1Y perf<-30%, 3M<0%, 1M<0%, RSI<40, Fiyat>SMA20, Hacim>avg, perf 1D>2%
+    # %80: perf_252d -28→-20, RSI 43→48, hacim 1.8x→1.3x, rel_vol 1.8→1.3, ADX 22→18
     elif kod == "13":
-        return (lt(p["perf_252d"], -30) and lt(p["perf_63d"], 0) and lt(p["perf_21d"], 0) and
-                lt(p["rsi"], 40) and gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["perf_1d"], 2) and
-                gt(p["rel_vol"], 1.5))
+        return (lt(p["perf_252d"], -20) and lt(p["rsi"], 48) and
+                gt(price, p["sma20"] or 0) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["perf_1d"], 2) and
+                gt(p["rel_vol"], 1.3) and gt(p["adx"], 18))
 
     # ── 14: Büyük Ralli ──
-    # Fiyat > SMA50 ve SMA200, RSI 60-78, ADX > 30, MACD > sinyal, hacim > 2x, perf 1W>15% 1M>25% 3M>40%
+    # Ham: Fiyat>SMA50 ve SMA200, RSI 60-78, ADX>30, MACD>sinyal, Hacim>2x, perf 1W>15% 1M>25% 3M>40%
+    # %80: Hacim 2.2x→1.7x, ADX 32→25, perf_5d 13→10, perf_21d 21→17, perf_63d eklendi
     elif kod == "14":
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 60, 78) and gt(p["adx"], 30) and
-                p["macd_above_signal"] and p["macd_hist_artiyor"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*2.0) and gt(p["rel_vol"], 2.0) and
-                gt(p["perf_5d"], 15) and gt(p["perf_21d"], 25) and gt(p["perf_63d"], 40))
+                between(p["rsi"], 59, 78) and gt(p["adx"], 25) and
+                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
+                p["macd_hist_artiyor"] and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.7) and
+                gt(p["perf_5d"], 10) and gt(p["perf_21d"], 17) and p["price_above_vwap"])
 
     # ── 15: Bilançodan Önce Hareket ──
-    # Fiyat > SMA50, RSI > 55, perf 1W > 5%, hacim > avg, ADX > 25, earnings_momentum
+    # Ham: Fiyat>SMA50, RSI>55, perf 1W>5%, Hacim>avg, ADX>25
+    # %80: Hacim 1.8x→1.3x, ADX 25→20, perf_5d 6→4
     elif kod == "15":
-        return (gt(price, p["sma50"] or 0) and gt(p["rsi"], 55) and
-                between(p["perf_5d"], 5, 30) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["adx"], 25) and
-                p["macd_hist_pozitif"] and p["price_above_vwap"] and
-                p.get("earnings_momentum", False))
+        return (gt(price, p["sma50"] or 0) and gt(p["rsi"], 54) and
+                between(p["perf_5d"], 4, 30) and
+                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["adx"], 20) and
+                p["macd_hist_pozitif"] and p["price_above_vwap"])
 
-    # ── 16: Baz Kırılımı (Yeni) ──
-    # Son 3 ayda yatay/düşen + fiyat > SMA50 ve SMA200 + EMA9>EMA21>SMA50
-    # MACD > 0, RSI 55-68, son 10g hacim > önceki 1ay hacim ortalaması
+    # ── 16: Baz Kırılımı (YENİ) ──
     elif kod == "16":
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
                 p.get("ema_dizilimi", False) and
-                p["macd_hist_pozitif"] and between(p["rsi"], 55, 68) and
+                p["macd_hist_pozitif"] and p["macd_above_signal"] and
+                between(p["rsi"], 55, 68) and
                 p.get("vol_10_vs_20", False) and
-                p["macd_above_signal"] and
                 gt(p["adx"], 20) and p["price_above_vwap"])
 
     # ── A: Piyasadan Güçlü ──
@@ -2054,12 +2071,10 @@ def strateji_filtre(ind, kod):
         return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
                 gt(p["perf_5d"], 5) and gt(p["perf_21d"], 10) and gt(p["rsi"], 50))
 
-    # ── B: Günlük Güçlü Para Girişi ──
-    # Hacim > 2x, rel_vol > 2, perf 1D > 2%, fiyat > SMA20, RSI > 50, perf 1W > 5%
+    # ── B: Büyük Para Girişi ──
     elif kod == "B":
-        return (gt(p["vol_cur"], (p["vol_avg20"] or 0)*2.0) and gt(p["rel_vol"], 2.0) and
-                gt(p["perf_1d"], 2) and gt(price, p["sma20"] or 0) and
-                gt(p["rsi"], 50) and gt(p["perf_5d"], 5))
+        return (gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
+                gt(p["perf_1d"], 1) and gt(p["rsi"], 45) and gt(price, p["sma20"] or 0))
 
     # ── C: Endeks Düşerken Güçlü ──
     elif kod == "C":
