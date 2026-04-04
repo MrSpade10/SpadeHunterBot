@@ -4931,3 +4931,7 @@ if __name__ == "__main__":
             print(f"Flask çöktü ({flask_crash}): {e}")
             _notify_admin(f"🔴 Flask çöktü: {str(e)[:120]}\n♻️ 10sn sonra...")
             time.sleep(10)
+            GitHub repo klasörü\agents\
+                    ├─ CEO.agent.md
+                    ├─ ResearchDept.agent.md
+                    └─ ... (10 agent)
