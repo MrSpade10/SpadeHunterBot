@@ -1,5 +1,12 @@
-Copy-Item "c:\Users\salih\OneDrive\Masaüstü\Claude\agents" . -Recurse -Force
-Copy-Item "c:\Users\salih\OneDrive\Masaüstü\Claude\ruflo.config.json" . -Force
-git add .
-git commit -m "Add 10 Ruflo agents"
-git push
+# bot.py'ı tamamen temizle - tüm ters slashları forward slash'a çevir
+$content = Get-Content bot.py -Encoding UTF8 -Raw
+$cleaned = $content.Replace('\U', '/U').Replace('\', '/').Replace('"c:', '"c/').Replace('PowerShell', '')
+$cleaned | Set-Content bot.py -Encoding UTF8
+
+# Commit et
+git add bot.py
+git commit -m "Fix: Clean bot.py unicode escape sequences"
+git push origin main
+git add bot.py
+git commit -m "Fix: Clean bot.py unicode escape sequences"
+git push origin main
