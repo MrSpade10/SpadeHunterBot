@@ -1905,181 +1905,375 @@ _STRATEJI_REJIM_TIPI = {
 }
 
 def strateji_filtre(ind, kod):
-    p = ind; price = p["price"]
+    """
+    Her strateji: ZORUNLU koşullar + TEYIT puanı sistemi.
+    Zorunlular geçilmezse direkt False.
+    Teyit: n koşuldan en az k tanesi sağlanmalı.
+    Fake sinyal önleme: yön koşulları asla esnetilmez.
+    """
+    p = ind
+    price = p["price"]
+
     def gt(val, thr): return val is not None and val > thr
     def lt(val, thr): return val is not None and val < thr
     def between(val, lo, hi): return val is not None and lo <= val <= hi
-    def near(val, ref, pct): return val is not None and ref is not None and ref > 0 and abs(val-ref)/ref*100 <= pct
+    def near(val, ref, pct):
+        return (val is not None and ref is not None
+                and ref > 0 and abs(val - ref) / ref * 100 <= pct)
+    def score(conditions):
+        """Koşulların kaçı True → sayı döndürür."""
+        return sum(1 for c in conditions if c)
 
-    # ── 1: Smart Money Birikim ──
-    # Ham: Fiyat>SMA200, BB sıkışma, RSI 40-65, Hacim>SMA20, perf 1W 0-5%
-    # %80: Hacim 1.8x→1.4x, perf_21d 11→8, rel_vol kaldırıldı, kapanis_yukari opsiyonel
+    # ════════════════════════════════════════════════════════
+    # 1 — SMART MONEY BİRİKİM
+    # Tanım: Patlama öncesi sessiz akümülasyon. Fiyat sıkışmış,
+    #        kurumsal birikim var, hacim normal ama artıyor.
+    # ════════════════════════════════════════════════════════
     if kod == "1":
-        return (gt(price, p["sma200"] or 0) and near(price, p["sma50"], 7) and
-                between(p["rsi"], 40, 68) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and
-                p["bb_width_low60"] and
-                between(p["perf_5d"], 0, 6) and gt(p["perf_21d"], 8) and
-                gt(p["adx"], 22) and p["price_above_vwap"] and
-                p["macd_hist_artiyor"])
+        # Zorunlu: trend pozitif + sıkışma var
+        if not (gt(price, p["sma200"] or 0) and p["bb_width_low60"]):
+            return False
+        # Teyit: 4/7
+        teyit = score([
+            near(price, p["sma50"], 12),          # SMA50 yakını
+            between(p["rsi"], 38, 68),             # RSI uygun bölge
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.2),  # hacim artıyor
+            gt(p["perf_21d"], 4),                  # aylık pozitif
+            p["macd_hist_artiyor"],                # MACD momentum
+            gt(p["adx"], 18),                      # trend gücü var
+            gt(price, p["sma50"] or 0),            # SMA50 üstünde
+        ])
+        return teyit >= 4
 
-    # ── 2: Düşen Trend Kırılımı ──
-    # Ham: Fiyat>SMA20 ve SMA50, RSI 50-70, MACD>sinyal, Hacim>avg, perf 1D>2% 1W>5% 1M<10%
-    # %80: Hacim 1.8x→1.4x, rel_vol 1.8→1.3, ADX 25→20, rsi_yukari_3g kaldırıldı
+    # ════════════════════════════════════════════════════════
+    # 2 — DÜŞEN TREND KIRILIMI
+    # Tanım: Düşüşten çıkış, yeni yükseliş başlangıcı.
+    #        Fiyat SMA'ları kırdı, momentum dönüyor.
+    # ════════════════════════════════════════════════════════
     elif kod == "2":
-        return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 50, 74) and
-                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
-                p["macd_hist_pozitif"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and gt(p["rel_vol"], 1.3) and
-                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 5) and lt(p["perf_21d"], 11) and
-                gt(p["adx"], 20) and p["price_above_vwap"])
+        # Zorunlu: fiyat SMA'ların üstünde + RSI uygun
+        if not (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0)
+                and between(p["rsi"], 46, 74)):
+            return False
+        # Teyit: 3/6
+        teyit = score([
+            p["macd_hist_pozitif"],
+            p["macd_above_signal"],
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.2),
+            gt(p["perf_1d"], 1) or gt(p["perf_5d"], 3),
+            lt(p["perf_21d"], 14),
+            gt(p["adx"], 17),
+        ])
+        return teyit >= 3
 
-    # ── 3: Dipten Dönüş ──
-    # Ham: RSI<35 + 30 üstüne çıkış, Stokastik kesişim, fiyat>alt BB, Hacim>avg, perf 1D>2%
-    # %80: RSI<45 korundu, macd_hist_pozitif_kesim→rsi yükseliyor, hacim 1.8x→1.3x, ADX 25→20
+    # ════════════════════════════════════════════════════════
+    # 3 — DİPTEN DÖNÜŞ
+    # Tanım: Aşırı satım bölgesinden güçlü dönüş.
+    #        RSI dip yapıp yukarı döndü, hacim girişi var.
+    # ════════════════════════════════════════════════════════
     elif kod == "3":
-        rsi3_yukari = (p["rsi"] is not None and p["rsi_prev"] is not None and p["rsi"] > p["rsi_prev"])
-        return (lt(p["rsi"], 45) and rsi3_yukari and
-                gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and
-                gt(p["perf_1d"], 2) and lt(p["perf_5d"], 0) and lt(p["perf_21d"], 0))
+        rsi_donuyor = (p["rsi"] is not None and p["rsi_prev"] is not None
+                       and p["rsi"] > p["rsi_prev"])
+        # Zorunlu: RSI aşırı satım + dönüş başladı
+        if not (lt(p["rsi"], 50) and rsi_donuyor):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            gt(price, p["sma20"] or 0),
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.1),
+            gt(p["perf_1d"], 1),
+            lt(p["perf_21d"], 8),
+            p["has_bullish_div"] if p.get("has_bullish_div") is not None else False,
+        ])
+        return teyit >= 3
 
-    # ── 4: Momentum Patlaması ──
-    # Ham: Fiyat>SMA50 ve SMA200, RSI 55-70, MACD kesişim, Hacim>1.5x, perf 1D>3% 1W>8% 1M>15%, ADX>25
-    # %80: Hacim 2.0x→1.5x, rel_vol 1.9→1.5, perf_5d 8→6, perf_21d 13→10, ADX 28→22
+    # ════════════════════════════════════════════════════════
+    # 4 — MOMENTUM PATLAMASI
+    # Tanım: Güçlü yükseliş trendi. SMA'lar altında,
+    #        hacim ve MACD onaylıyor.
+    # ════════════════════════════════════════════════════════
     elif kod == "4":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 55, 74) and
-                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
-                p["macd_hist_pozitif"] and p["macd_hist_artiyor"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
-                gt(p["perf_5d"], 6) and gt(p["perf_21d"], 10) and gt(p["adx"], 22))
+        # Zorunlu: trend + MACD momentum
+        if not (gt(price, p["sma50"] or 0)
+                and between(p["rsi"], 50, 76)
+                and p["macd_hist_pozitif"]):
+            return False
+        # Teyit: 3/6
+        teyit = score([
+            gt(price, p["sma200"] or 0),
+            p["macd_hist_artiyor"],
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3),
+            gt(p["rel_vol"], 1.3),
+            gt(p["perf_5d"], 4) or gt(p["perf_21d"], 8),
+            gt(p["adx"], 20),
+        ])
+        return teyit >= 3
 
-    # ── 6: Tavan Serisi ──
-    # Ham: RSI 55-75, Hacim>2x, perf 1D>5% 1W>15% 1M>25%
-    # %80: Hacim 2.2x→1.8x, rel_vol 2.2→1.8, perf_1d 5→4, perf_5d 16→12, perf_21d 26→20, ADX 32→26
+    # ════════════════════════════════════════════════════════
+    # 6 — TAVAN SERİSİ
+    # Tanım: Güçlü yükseliş, art arda tavan mum adayı.
+    #        RSI yüksek ama henüz aşırı alım değil.
+    # ════════════════════════════════════════════════════════
     elif kod == "6":
-        return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                between(p["rsi"], 60, 82) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.8) and gt(p["rel_vol"], 1.8) and
-                gt(p["perf_1d"], 4) and gt(p["perf_5d"], 12) and gt(p["perf_21d"], 20) and
-                gt(p["adx"], 26) and p["macd_hist_artiyor"] and p["price_above_vwap"])
+        # Zorunlu: yüksek RSI + fiyat SMA üstünde
+        if not (between(p["rsi"], 56, 84)
+                and gt(price, p["sma20"] or 0)):
+            return False
+        # Teyit: 3/6
+        teyit = score([
+            gt(price, p["sma50"] or 0),
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4),
+            gt(p["rel_vol"], 1.4),
+            gt(p["perf_1d"], 2) or gt(p["perf_5d"], 8),
+            gt(p["perf_21d"], 12),
+            p["macd_hist_artiyor"],
+        ])
+        return teyit >= 3
 
-    # ── 7: Akümülasyon Çıkışı ──
-    # Ham: Fiyat>SMA50 ve SMA200, son 20g yüksek kırılımı, RSI 55-70, MACD>sinyal, Hacim>1.5x, perf 1D>3% 1W>8% 1M 0-10%, ADX>25
-    # %80: macd_fresh_cross→macd_above_signal, hacim 1.9x→1.5x, perf_1d 3→2, perf_5d 9→7, ADX 25→20
+    # ════════════════════════════════════════════════════════
+    # 7 — AKÜMÜLASYON ÇIKIŞI
+    # Tanım: Uzun sıkışma sonrası patlama başlangıcı.
+    #        MACD kesişim veya yukarı döndü.
+    # ════════════════════════════════════════════════════════
     elif kod == "7":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 52, 70) and p["macd_above_signal"] and
-                p["macd_hist_pozitif"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
-                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 7) and
-                between(p["perf_21d"], 0, 12) and gt(p["adx"], 20) and p["price_above_vwap"])
+        # Zorunlu: trend + MACD pozitif
+        if not (gt(price, p["sma50"] or 0)
+                and p["macd_above_signal"]):
+            return False
+        # Teyit: 3/6
+        teyit = score([
+            gt(price, p["sma200"] or 0),
+            between(p["rsi"], 48, 72),
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.2),
+            gt(p["perf_5d"], 3) or gt(p["perf_21d"], 5),
+            between(p["perf_21d"], -3, 16),
+            gt(p["adx"], 16),
+        ])
+        return teyit >= 3
 
-    # ── 8: Erken Trend Doğumu ──
-    # Ham: Fiyat>SMA20>SMA50, RSI 50-65, MACD>sinyal, Hacim>avg, perf 1W 0-6%, 1M 0-12%
-    # %80: Hacim 1.8x→1.3x, rel_vol kaldırıldı, ADX 25→20, price_above_vwap opsiyonel
+    # ════════════════════════════════════════════════════════
+    # 8 — ERKEN TREND DOĞUMU
+    # Tanım: SMA dizilimi yeni oluştu, trend başlıyor.
+    #        Henüz erken: performans düşük ama yön değişti.
+    # ════════════════════════════════════════════════════════
     elif kod == "8":
-        return (gt(price, p["sma20"] or 0) and gt(price, p["sma50"] or 0) and
-                gt(p["sma20"] or 0, p["sma50"] or 0) and
-                between(p["rsi"], 48, 66) and
-                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and
-                between(p["perf_5d"], 0, 7) and between(p["perf_21d"], 0, 13) and
-                gt(p["adx"], 20))
+        # Zorunlu: EMA dizilimi oluştu
+        if not (gt(price, p["sma20"] or 0)
+                and gt(price, p["sma50"] or 0)
+                and gt(p["sma20"] or 0, p["sma50"] or 0)):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            between(p["rsi"], 44, 68),
+            p["macd_hist_pozitif"],
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.1),
+            between(p["perf_5d"], 0, 10),
+            gt(p["adx"], 15),
+        ])
+        return teyit >= 3
 
-    # ── 9: Kurumsal Para Girişi ──
-    # Ham: Fiyat>SMA50, SMA50'nin %0-8 üstünde, RSI 45-60, Hacim>1.5x, rel_vol>1.7, perf 1W 0-6% 1M 5-20%
-    # %80: Hacim 1.9x→1.4x, rel_vol 1.9→1.5, ADX 25→20, near SMA50 %8'e genişletildi
+    # ════════════════════════════════════════════════════════
+    # 9 — KURUMSAL PARA GİRİŞİ
+    # Tanım: Sessiz fiyat hareketi + yüksek hacim.
+    #        SMA50 yakını, RSI orta bölge, hacim anormal.
+    # ════════════════════════════════════════════════════════
     elif kod == "9":
-        return (gt(price, p["sma50"] or 0) and near(price, p["sma50"], 10) and
-                between(p["rsi"], 44, 62) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.4) and gt(p["rel_vol"], 1.5) and
-                between(p["perf_5d"], 0, 7) and between(p["perf_21d"], 5, 22) and
-                gt(p["adx"], 20) and p["macd_hist_pozitif"])
+        # Zorunlu: fiyat SMA50 üstünde + hacim artışı
+        if not (gt(price, p["sma50"] or 0)
+                and gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.2)):
+            return False
+        # Teyit: 3/6
+        teyit = score([
+            near(price, p["sma50"], 18),
+            between(p["rsi"], 40, 65),
+            gt(p["rel_vol"], 1.3),
+            between(p["perf_5d"], -2, 10),
+            gt(p["perf_21d"], 2),
+            p["macd_hist_pozitif"],
+        ])
+        return teyit >= 3
 
-    # ── 10: Güçlü Konsolidasyon (Power Base) ──
-    # Ham: Fiyat SMA50 ±5%, RSI 40-55, günlük ±1%, haftalık ±3%, Hacim<avg, rel_vol<1
-    # %80: BB koşulu kaldırıldı, ADX eşiği esnetildi, perf aralıkları biraz genişletildi
+    # ════════════════════════════════════════════════════════
+    # 10 — GÜÇLÜ KONSOLİDASYON (Power Base)
+    # Tanım: Yatay sıkışma, düşük hacim, BB daralıyor.
+    #        Büyük hareket öncesi enerji birikiyor.
+    # ════════════════════════════════════════════════════════
     elif kod == "10":
-        return (near(price, p["sma50"], 6) and between(p["rsi"], 36, 58) and
-                between(p["perf_1d"], -2, 2) and between(p["perf_5d"], -5, 5) and
-                lt(p["vol_cur"], (p["vol_avg20"] or 0)*0.9) and
-                p["bb_width_low60"] and lt(p["adx"], 22))
+        # Zorunlu: sıkışma var
+        if not p["bb_width_low60"]:
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            near(price, p["sma50"], 10),
+            between(p["rsi"], 34, 62),
+            between(p["perf_5d"], -8, 8),
+            lt(p["vol_cur"], (p["vol_avg20"] or 0)*1.1),
+            lt(p["adx"], 25),
+        ])
+        return teyit >= 3
 
-    # ── 11: Volatilite Patlaması ──
-    # Ham: Fiyat>SMA20 ve SMA50, RSI>55, MACD>sinyal, Hacim>2x, perf 1D>3% 1W>8%
-    # %80: Hacim 2.2x→1.7x, rel_vol 2.2→1.7, perf_1d 3→2, perf_5d 9→7, ADX 28→22
+    # ════════════════════════════════════════════════════════
+    # 11 — VOLATİLİTE PATLAMASI
+    # Tanım: Ani yüksek hacim + güçlü fiyat hareketi.
+    #        Kurumsal giriş işareti.
+    # ════════════════════════════════════════════════════════
     elif kod == "11":
-        return (gt(price, p["sma20"] or 0) and gt(p["rsi"], 54) and
-                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.7) and gt(p["rel_vol"], 1.7) and
-                gt(p["perf_1d"], 2) and gt(p["perf_5d"], 7) and
-                gt(p["adx"], 22) and p["price_above_vwap"])
+        # Zorunlu: güçlü hacim + fiyat SMA üstünde
+        if not (gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5)
+                and gt(price, p["sma20"] or 0)):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            gt(p["rsi"], 50),
+            p["macd_hist_pozitif"],
+            gt(p["rel_vol"], 1.5),
+            gt(p["perf_1d"], 1) or gt(p["perf_5d"], 4),
+            gt(p["adx"], 18),
+        ])
+        return teyit >= 3
 
-    # ── 12: Sektör Lideri ──
-    # Ham: Fiyat>SMA50 ve SMA200, SMA50>SMA200, RSI>60, perf 1W>10% 1M>20% 3M>35% 1Y>60%
-    # %80: RSI 59→55, perf_5d 11→8, perf_21d 19→15, perf_63d 32→25, ADX 26→22
+    # ════════════════════════════════════════════════════════
+    # 12 — SEKTÖR LİDERİ
+    # Tanım: Piyasadan sürekli güçlü seyreden hisseler.
+    #        Uzun vadeli performans üstün.
+    # ════════════════════════════════════════════════════════
     elif kod == "12":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                gt(p["sma50"] or 0, p["sma200"] or 0) and
-                gt(p["rsi"], 55) and
-                gt(p["perf_5d"], 8) and gt(p["perf_21d"], 15) and
-                gt(p["perf_63d"], 25) and gt(p["adx"], 22))
+        # Zorunlu: fiyat her iki SMA üstünde
+        if not (gt(price, p["sma50"] or 0)
+                and gt(price, p["sma200"] or 0)):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            gt(p["rsi"], 50),
+            gt(p["perf_5d"], 4),
+            gt(p["perf_21d"], 10),
+            gt(p["perf_63d"], 18),
+            gt(p["sma50"] or 0, p["sma200"] or 0),
+        ])
+        return teyit >= 3
 
-    # ── 13: Dipten Lider Doğuşu (Fallen Angels) ──
-    # Ham: 1Y perf<-30%, 3M<0%, 1M<0%, RSI<40, Fiyat>SMA20, Hacim>avg, perf 1D>2%
-    # %80: perf_252d -28→-20, RSI 43→48, hacim 1.8x→1.3x, rel_vol 1.8→1.3, ADX 22→18
+    # ════════════════════════════════════════════════════════
+    # 13 — DİPTEN LİDER DOĞUŞU (Fallen Angel)
+    # Tanım: Uzun süredir düşen hisse dip yapıyor.
+    #        İlk güçlü gün sinyali.
+    # ════════════════════════════════════════════════════════
     elif kod == "13":
-        return (lt(p["perf_252d"], -20) and lt(p["rsi"], 48) and
-                gt(price, p["sma20"] or 0) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["perf_1d"], 2) and
-                gt(p["rel_vol"], 1.3) and gt(p["adx"], 18))
+        # Zorunlu: yıllık düşüş var + dip sinyali
+        if not (lt(p["perf_252d"], -12)
+                and gt(p["perf_1d"], 1)):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            lt(p["rsi"], 55),
+            gt(price, p["sma20"] or 0),
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.2),
+            lt(p["perf_21d"], 5),
+            gt(p["rel_vol"], 1.2),
+        ])
+        return teyit >= 3
 
-    # ── 14: Büyük Ralli ──
-    # Ham: Fiyat>SMA50 ve SMA200, RSI 60-78, ADX>30, MACD>sinyal, Hacim>2x, perf 1W>15% 1M>25% 3M>40%
-    # %80: Hacim 2.2x→1.7x, ADX 32→25, perf_5d 13→10, perf_21d 21→17, perf_63d eklendi
+    # ════════════════════════════════════════════════════════
+    # 14 — BÜYÜK RALLİ
+    # Tanım: Her gösterge aynı anda uyumlu.
+    #        Güçlü trend + hacim + momentum.
+    # ════════════════════════════════════════════════════════
     elif kod == "14":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                between(p["rsi"], 59, 78) and gt(p["adx"], 25) and
-                gt(p["macd"], p["macd_sig"] if p["macd_sig"] is not None else -999) and
-                p["macd_hist_artiyor"] and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.7) and
-                gt(p["perf_5d"], 10) and gt(p["perf_21d"], 17) and p["price_above_vwap"])
+        # Zorunlu: trend + MACD + RSI uyum
+        if not (gt(price, p["sma50"] or 0)
+                and p["macd_hist_pozitif"]
+                and between(p["rsi"], 54, 80)):
+            return False
+        # Teyit: 4/6
+        teyit = score([
+            gt(price, p["sma200"] or 0),
+            gt(p["adx"], 22),
+            p["macd_hist_artiyor"],
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3),
+            gt(p["perf_5d"], 6),
+            gt(p["perf_21d"], 12),
+        ])
+        return teyit >= 4
 
-    # ── 15: Bilançodan Önce Hareket ──
-    # Ham: Fiyat>SMA50, RSI>55, perf 1W>5%, Hacim>avg, ADX>25
-    # %80: Hacim 1.8x→1.3x, ADX 25→20, perf_5d 6→4
+    # ════════════════════════════════════════════════════════
+    # 15 — BİLANÇODAN ÖNCE HAREKET
+    # Tanım: Bilanço öncesi teknik + temel uyum.
+    #        Fiyat SMA üstünde, momentum var.
+    # ════════════════════════════════════════════════════════
     elif kod == "15":
-        return (gt(price, p["sma50"] or 0) and gt(p["rsi"], 54) and
-                between(p["perf_5d"], 4, 30) and
-                gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3) and gt(p["adx"], 20) and
-                p["macd_hist_pozitif"] and p["price_above_vwap"])
+        # Zorunlu: fiyat SMA50 üstünde + MACD pozitif
+        if not (gt(price, p["sma50"] or 0)
+                and p["macd_hist_pozitif"]):
+            return False
+        # Teyit: 3/5
+        teyit = score([
+            between(p["rsi"], 48, 76),
+            between(p["perf_5d"], 2, 40),
+            gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.1),
+            gt(p["adx"], 16),
+            p["macd_above_signal"],
+        ])
+        return teyit >= 3
 
-    # ── 16: Baz Kırılımı (YENİ) ──
+    # ════════════════════════════════════════════════════════
+    # 16 — BAZ KIRILIMI
+    # Tanım: 3ay yatay seyir + EMA dizilimi oluştu.
+    # ════════════════════════════════════════════════════════
     elif kod == "16":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                p.get("ema_dizilimi", False) and
-                p["macd_hist_pozitif"] and p["macd_above_signal"] and
-                between(p["rsi"], 55, 68) and
-                p.get("vol_10_vs_20", False) and
-                gt(p["adx"], 20) and p["price_above_vwap"])
+        if not (gt(price, p["sma50"] or 0)
+                and gt(price, p["sma200"] or 0)
+                and p.get("ema_dizilimi", False)):
+            return False
+        teyit = score([
+            p["macd_hist_pozitif"],
+            p["macd_above_signal"],
+            between(p["rsi"], 48, 72),
+            p.get("vol_10_vs_20", False),
+            gt(p["adx"], 16),
+        ])
+        return teyit >= 3
 
-    # ── A: Piyasadan Güçlü ──
+    # ════════════════════════════════════════════════════════
+    # A — PİYASADAN GÜÇLÜ
+    # ════════════════════════════════════════════════════════
     elif kod == "A":
-        return (gt(price, p["sma50"] or 0) and gt(price, p["sma200"] or 0) and
-                gt(p["perf_5d"], 5) and gt(p["perf_21d"], 10) and gt(p["rsi"], 50))
+        if not (gt(price, p["sma50"] or 0)
+                and gt(price, p["sma200"] or 0)):
+            return False
+        teyit = score([
+            gt(p["perf_5d"], 3),
+            gt(p["perf_21d"], 7),
+            gt(p["rsi"], 46),
+            gt(p["perf_63d"], 12) if p["perf_63d"] is not None else False,
+        ])
+        return teyit >= 2
 
-    # ── B: Büyük Para Girişi ──
+    # ════════════════════════════════════════════════════════
+    # B — GÜNLÜK GÜÇLÜ PARA GİRİŞİ
+    # ════════════════════════════════════════════════════════
     elif kod == "B":
-        return (gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.5) and gt(p["rel_vol"], 1.5) and
-                gt(p["perf_1d"], 1) and gt(p["rsi"], 45) and gt(price, p["sma20"] or 0))
+        if not gt(p["vol_cur"], (p["vol_avg20"] or 0)*1.3):
+            return False
+        teyit = score([
+            gt(p["rel_vol"], 1.3),
+            gt(p["perf_1d"], 0.8),
+            gt(p["rsi"], 42),
+            gt(price, p["sma20"] or 0),
+            p["macd_hist_pozitif"],
+        ])
+        return teyit >= 3
 
-    # ── C: Endeks Düşerken Güçlü ──
+    # ════════════════════════════════════════════════════════
+    # C — ENDEKS DÜŞERKEN GÜÇLÜ
+    # ════════════════════════════════════════════════════════
     elif kod == "C":
-        return (gt(p["perf_1d"], 0) and gt(p["perf_5d"], 3) and
-                gt(p["rsi"], 50) and gt(price, p["sma50"] or 0))
+        teyit = score([
+            gt(p["perf_1d"], 0),
+            gt(p["perf_5d"], 1.5),
+            gt(p["rsi"], 44),
+            gt(price, p["sma50"] or 0),
+            gt(price, p["sma20"] or 0),
+        ])
+        return teyit >= 3
 
     return False
 
